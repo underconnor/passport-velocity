@@ -1,0 +1,17 @@
+.gradle/
+build/
+out/
+run/
+logs/
+.env
+.env.*
+!.env.example
+*.local
+*.log
+.DS_Store
+.idea/
+.vscode/
+*.iml
+secrets/
+*.pem
+*.key
