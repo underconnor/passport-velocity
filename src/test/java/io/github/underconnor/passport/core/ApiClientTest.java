@@ -45,4 +45,21 @@ class ApiClientTest {
             assertTrue(TimeUnit.NANOSECONDS.toMillis(System.nanoTime()-start)<3500);
         } finally {server.stop(0);}
     }
+    @Test void eventPollingSendsExactDecimalCursorAndUsesServiceAuthentication() throws Exception {
+        HttpServer server=HttpServer.create(new InetSocketAddress("127.0.0.1",0),0);
+        java.util.List<String> queries=new java.util.concurrent.CopyOnWriteArrayList<>();
+        server.createContext("/v1/minecraft/events",exchange -> {
+            assertEquals("Bearer "+token,exchange.getRequestHeaders().getFirst("Authorization"));
+            queries.add(String.valueOf(exchange.getRequestURI().getRawQuery()));
+            byte[] body="{\"cursor\":\"9223372036854775807\",\"reset\":true,\"events\":[]}".getBytes(StandardCharsets.UTF_8);
+            exchange.sendResponseHeaders(200,body.length);exchange.getResponseBody().write(body);exchange.close();
+        });server.start();
+        try(ApiClient api=new ApiClient("http://127.0.0.1:"+server.getAddress().getPort(),token,true)) {
+            assertTrue(api.events(null).get(3,TimeUnit.SECONDS).reset());
+            assertEquals("9223372036854775807",api.events("9223372036854775807").get(3,TimeUnit.SECONDS).cursor());
+            assertEquals(java.util.List.of("null","after=9223372036854775807"),queries);
+            assertThrows(IllegalArgumentException.class,()->api.events("1&admin=true"));
+        } finally {server.stop(0);}
+    }
+
 }

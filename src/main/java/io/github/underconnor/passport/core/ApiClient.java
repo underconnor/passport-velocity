@@ -22,6 +22,11 @@ public final class ApiClient implements AutoCloseable {
         if (token == null || token.length() < 32 || token.contains("\n") || token.contains("\r")) throw new IllegalArgumentException("API_SERVICE_TOKEN must be at least 32 characters");
         this.token = token;
     }
+    public CompletableFuture<PolicyEvents> events(String after) {
+        if (after != null) PolicyEvents.cursorNumber(after);
+        return request("GET", "v1/minecraft/events" + (after == null ? "" : "?after=" + after), null)
+            .thenApply(PolicyEvents::parse);
+    }
     public CompletableFuture<Policy> policy(UUID uuid) {
         return request("GET", "v1/minecraft/policies/" + uuid, null)
             .thenApply(body -> Policy.parse(body, uuid, Instant.now()));

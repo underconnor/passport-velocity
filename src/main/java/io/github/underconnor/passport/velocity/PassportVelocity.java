@@ -27,6 +27,8 @@ public final class PassportVelocity {
     private final PolicyCache policies = new PolicyCache();
     private final Map<UUID, Session> sessions = new ConcurrentHashMap<>();
     private ApiClient api;
+    private PolicyRefreshes refreshes;
+    private PolicyEventPoller eventPoller;
     private volatile boolean ready;
     private String waiting, defaultServer;
     private URI webOrigin;
@@ -55,8 +57,18 @@ public final class PassportVelocity {
             sensitive = new HashSet<>(Arrays.asList(ApiClient.env("PASSPORT_SENSITIVE_SERVERS", "").split(",")));
             api = new ApiClient(ApiClient.env("PASSPORT_API_BASE_URL", "https://api.passport.example/"),
                 System.getenv("API_SERVICE_TOKEN"), Boolean.parseBoolean(ApiClient.env("PASSPORT_ALLOW_INSECURE_HTTP", "false")));
+            refreshes = new PolicyRefreshes(uuid -> api.policy(uuid).thenApply(policy -> {
+                if (!policies.acceptOrCurrent(policy)) throw new CompletionException(new IllegalStateException("Stale policy response"));
+                return policy;
+            }));
+            eventPoller = new PolicyEventPoller(api::events,
+                () -> sessions.values().stream().filter(this::current).map(s -> s.player.getUniqueId()).collect(java.util.stream.Collectors.toSet()),
+                this::refreshFromEvent);
             ready = true;
             proxy.getScheduler().buildTask(this, this::tick).repeat(Duration.ofSeconds(1)).schedule();
+            proxy.getScheduler().buildTask(this, () -> {
+                if (ready) eventPoller.poll().exceptionally(error -> null);
+            }).repeat(Duration.ofSeconds(2)).schedule();
             logger.info("Passport enabled: waiting server {}, access checks fail closed", waiting);
         } catch (RuntimeException error) { logger.error("Passport configuration invalid; player admission is closed: {}", error.getMessage()); }
     }
@@ -117,10 +129,14 @@ public final class PassportVelocity {
     private boolean current(Session session) { return ready && session.player.isActive() && sessions.get(session.player.getUniqueId()) == session; }
     private CompletableFuture<Boolean> refresh(Session session) {
         if (!current(session)) return CompletableFuture.completedFuture(false);
-        return api.policy(session.player.getUniqueId()).thenApply(policy -> {
-            if (!current(session)) return false;
-            // An out-of-order response must never grant a sensitive-server online check.
-            return policies.acceptOrCurrent(policy);
+        return refreshes.fetch(session.player.getUniqueId()).thenApply(policy -> current(session));
+    }
+    private CompletableFuture<Policy> refreshFromEvent(UUID uuid, boolean reset) {
+        Session session = sessions.get(uuid);
+        if (session == null || !current(session)) return CompletableFuture.completedFuture(null);
+        return (reset ? refreshes.fresh(uuid) : refreshes.fetch(uuid)).thenApply(policy -> {
+            if (current(session)) { enforce(session); moveDefault(session); }
+            return policy;
         });
     }
     private void tick() {
