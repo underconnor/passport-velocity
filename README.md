@@ -1,46 +1,59 @@
-# Passport Velocity
+# passport-velocity
 
-Velocity에서 정품 Minecraft Java 계정의 연결 상태와 서버별 접근 권한을 검사하는 중앙 접속 제어 플러그인입니다.
+NanoLimbo 대기 서버 안내, 웹 계정 연결, 중앙 정책에 따른 서버 이동 제어를 구현한 첫 개발 버전입니다.
 
-**현재 상태: 개발 준비 문서만 작성했습니다.** Java 소스, Gradle 설정, 플러그인 메타데이터와 JAR은 아직 없습니다.
+대상 API는 Velocity **4.2.0**이며 Gradle 설정에서 고정했습니다. 실제 서버 호환 대상은 4.2.0 build 30 / Minecraft 26.2입니다. 산출물: `build/libs/passport-velocity-0.1.0-SNAPSHOT.jar`.
 
-## 역할
+## 구현한 동작
 
-- 프록시의 정품 계정 인증을 전제로 Minecraft UUID를 식별합니다.
-- 최초 접속과 모든 서버 이동에서 `passport-api`의 정책을 확인합니다.
-- 미인증 사용자를 NanoLimbo 대기 서버로 보내고 클릭 가능한 개인별 웹 연결 링크를 안내합니다.
-- 웹에서 본인 확인이 끝난 사용자에게 게임에서 `/passport confirm`으로 최종 확인하도록 합니다.
-- 허용된 서버로의 이동, 접근 거부 안내, 정지·권한 회수를 처리합니다.
-- API 통신과 짧은 정책 캐시를 관리하며 DB에 직접 접근하지 않습니다.
+- online-mode 프록시의 정품 계정 접속마다 새로운 게임 세션 ID 생성
+- 최초 목적지를 NanoLimbo 대기 서버로 지정하고 개인별 클릭 인증 링크 발급
+- `/passport`, `/passport status`, `/passport confirm`, `/passport cancel`
+- UUID·게임 세션에 묶인 웹/게임 확인 API, 종료 시 pending 연결 취소 시도
+- 모든 보호 서버 이동에 정책 검사, 민감 서버는 이동 시 API 재조회
+- API 장애에서는 기존의 유효 lease만 인정. 만료·거부 정책은 대기실로 이동하며 이동 실패 시 접속 종료
+- 20–25초 간격 정책 재조회, 1초 간격 만료 확인. 웹 확인이 마지막에 끝나도 다음 조회 시 허용된 기본 서버로 이동
+- 보호 서버에서 kick되면 대기 서버로만 이동. 대기 서버 장애 시 종료
 
-Discord ID는 사용자 입력 정보일 뿐이며 프록시 인증이나 접근 권한의 근거로 사용하지 않습니다.
+대기 서버는 upstream NanoLimbo를 별도로 실행하고 Velocity 서버 목록에 등록합니다. 책·인벤토리 GUI는 제공하지 않습니다. 서명된 채팅 본문을 바꾸지 않고 프록시 시스템 메시지를 보냅니다.
 
-## 예정 스택과 지원 기준
+## Velocity 환경 변수
 
-- Java 25 + Gradle Kotlin DSL
-- Velocity 4.2.0 build 30을 초기 호환성 검증 대상으로 사용
-- Adventure 채팅 컴포넌트로 링크와 상태 안내
-- `passport-contracts`의 버전이 고정된 API 계약·생성 클라이언트 배포본
+| 변수 | 기본값 | 용도 |
+|---|---|---|
+| `PASSPORT_WAITING_SERVER` | `passport-limbo` | 등록된 대기 서버 ID |
+| `PASSPORT_DEFAULT_SERVER` | `lobby` | 인증 후 허용 상태일 때 이동할 기본 서버 |
+| `PASSPORT_WEB_ORIGIN` | `https://passport.example` | 인증 링크에서 허용하는 정확한 scheme/host/port |
+| `PASSPORT_SENSITIVE_SERVERS` | 빈 값 | 매 이동 시 온라인 확인할 서버 ID, 쉼표 구분 |
 
-위 조합과 NanoLimbo 연동은 향후 빌드·실행 검증 대상입니다. 현재 준비 문서만으로 호환성을 확인한 것은 아닙니다.
+잘못된 설정에서는 플러그인이 로그인과 서버 이동을 차단합니다. 대기 서버 ID와 기본 서버 ID는 달라야 합니다. `announce-proxy-commands` 활성화를 권장합니다. 명령·접속 이벤트를 바꾸는 다른 플러그인과의 공존 검증이 필요합니다.
 
-## 다음 구현 순서
+## 빌드 및 검사
 
-1. API의 접근 판정·일회용 연결·게임 확인 계약을 확정합니다.
-2. 플러그인 부트스트랩과 비동기 API 클라이언트를 만듭니다.
-3. NanoLimbo 대기 상태에서 개인별 링크와 `/passport confirm`을 검증합니다.
-4. 최초 접속·서버 이동 검사와 접근 차단을 구현합니다.
-5. 정책 회수·API 장애·재접속·중복 연결 흐름을 검증합니다.
+JDK 25가 필요합니다. 각 저장소를 독립적으로 clone한 뒤 실행합니다.
 
-세부 범위는 [구현 계획](docs/implementation-plan.md), 소스 경계는 [src 안내](src/README.md)를 참고하세요.
+```sh
+./gradlew --no-daemon clean build
+```
 
-## 관련 저장소
+Gradle 9.4.0 wrapper와 배포 ZIP SHA-256을 고정했습니다. 라이브러리 잠금 파일 및 검증 체크섬을 포함하며, 비공개 contracts 저장소 또는 옆 폴더를 빌드 중 읽지 않습니다. `core` 패키지는 draft 계약의 소비자 구현을 각 저장소가 소유합니다. 계약 변경 시 두 소비자 테스트를 함께 갱신합니다.
 
-개인 계정의 관련 저장소입니다.
+## 공통 환경 변수
 
-- [passport-api](https://github.com/underconnor/passport-api): 연결 상태와 서버 접근 정책
-- [passport-contracts](https://github.com/underconnor/passport-contracts): API 계약과 배포 산출물
-- [passport-web](https://github.com/underconnor/passport-web): 학교 인증과 웹 확인
-- [passport-paper](https://github.com/underconnor/passport-paper): 백엔드 서버 방어와 prefix 표시
+| 변수 | 용도 |
+|---|---|
+| `PASSPORT_API_BASE_URL` | 중앙 API 주소. 기본값은 예시 주소이므로 운영값 필요 |
+| `API_SERVICE_TOKEN` | 32자 이상의 서비스 Bearer 토큰. 저장소·플러그인 설정 파일에 넣지 않음 |
+| `PASSPORT_ALLOW_INSECURE_HTTP` | 기본 false. 격리된 사설망 개발 HTTP에만 명시적으로 true |
 
-각 저장소는 독립적으로 빌드·배포합니다. 다른 저장소의 `../src`를 직접 참조하지 않습니다.
+HTTP 요청은 2초 제한, 동시 요청은 최대 32개입니다. 리다이렉트는 따라가지 않습니다. UUID·계약 버전·상태·서버 목록·정책 버전·최대 60초 lease를 검사합니다. 2초 이내의 시계 차이는 issuedAt 검사에만 허용하며 만료 시각을 연장하지 않습니다. 운영 서버 시간 동기화가 필요합니다.
+
+UUID별 버전 기준은 로그아웃해도 프로세스 메모리에 남습니다. 낮은 버전, 같은 버전의 같거나 이전 issuedAt 응답은 버립니다. 프로세스 재시작 후에는 새 유효 API 응답이 오기 전까지 허가하지 않습니다.
+
+## 현재 한계
+
+- 실제 정품 계정의 웹·게임 양쪽 확인 전체 흐름은 아직 실기기 검증 전입니다.
+- 학교 인증·회원 명부의 실제 연결은 API 저장소의 제공자 준비 상태에 따릅니다. 개발 fixture 검증은 학교 본인 인증을 증명하지 않습니다.
+- SSE 정책 무효화는 아직 구현하지 않았습니다. 회수 인지는 아래 주기적 조회 간격과 최대 lease에 따르며, 5초 회수 목표를 달성했다고 간주하지 않습니다.
+- 플러그인은 방화벽·프록시 forwarding 설정을 대신하지 않습니다. Paper 직접 접속 차단과 현대식 forwarding은 운영 배치의 필수 조건입니다.
+- 서비스별 토큰 분리·회전은 운영 구성 단계의 후속 작업입니다. 현재 API와 공유된 서비스 토큰을 사용합니다.
