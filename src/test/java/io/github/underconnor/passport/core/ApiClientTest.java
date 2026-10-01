@@ -62,4 +62,28 @@ class ApiClientTest {
         } finally {server.stop(0);}
     }
 
+    @Test void gameInspectionKeepsConnectionProofInAuthenticatedPostBody() throws Exception {
+        HttpServer server=HttpServer.create(new InetSocketAddress("127.0.0.1",0),0);
+        String id=UUID.randomUUID().toString(); UUID player=UUID.randomUUID();
+        String session="synthetic-active-game-session";
+        CompletableFuture<String> requestBody=new CompletableFuture<>();
+        CompletableFuture<String> method=new CompletableFuture<>(),authorization=new CompletableFuture<>(),query=new CompletableFuture<>();
+        server.createContext("/v1/link-sessions/"+id+"/game-inspect",exchange -> {
+            method.complete(exchange.getRequestMethod()); authorization.complete(exchange.getRequestHeaders().getFirst("Authorization"));
+            query.complete(String.valueOf(exchange.getRequestURI().getRawQuery()));
+            requestBody.complete(new String(exchange.getRequestBody().readAllBytes(),StandardCharsets.UTF_8));
+            String response="{\"id\":\""+id+"\",\"status\":\"pending\",\"expiresAt\":\""+java.time.Instant.now().plusSeconds(300)+"\",\"webConfirmed\":true,\"gameConfirmed\":false}";
+            byte[] body=response.getBytes(StandardCharsets.UTF_8);
+            exchange.sendResponseHeaders(200,body.length); exchange.getResponseBody().write(body); exchange.close();
+        }); server.start();
+        try(ApiClient api=new ApiClient("http://127.0.0.1:"+server.getAddress().getPort(),token,true)) {
+            LinkInspection state=api.gameInspect(id,player,session).get(3,TimeUnit.SECONDS);
+            assertEquals("POST",method.get()); assertEquals("Bearer "+token,authorization.get()); assertEquals("null",query.get());
+            com.google.gson.JsonObject body=com.google.gson.JsonParser.parseString(requestBody.get()).getAsJsonObject();
+            assertEquals(java.util.Set.of("minecraftUuid","gameSessionId"),body.keySet());
+            assertEquals(player.toString(),body.get("minecraftUuid").getAsString()); assertEquals(session,body.get("gameSessionId").getAsString());
+            assertTrue(state.webConfirmed()); assertFalse(state.gameConfirmed());
+        } finally { server.stop(0); }
+    }
+
 }

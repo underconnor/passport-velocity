@@ -36,6 +36,11 @@ public final class ApiClient implements AutoCloseable {
         body.addProperty("minecraftName", name);
         return request("POST", "v1/link-sessions", body).thenApply(s -> JsonParser.parseString(s).getAsJsonObject());
     }
+    public CompletableFuture<LinkInspection> gameInspect(String id, UUID uuid, String session) {
+        String expectedId = UUID.fromString(id).toString();
+        return request("POST", "v1/link-sessions/" + expectedId + "/game-inspect", identity(uuid, session))
+            .thenApply(body -> LinkInspection.parse(body, expectedId, Instant.now()));
+    }
     public CompletableFuture<JsonObject> confirm(String id, UUID uuid, String session) {
         return request("POST", "v1/link-sessions/" + UUID.fromString(id) + "/game-confirm", identity(uuid, session))
             .thenApply(s -> JsonParser.parseString(s).getAsJsonObject());
@@ -57,7 +62,7 @@ public final class ApiClient implements AutoCloseable {
             return http.sendAsync(request, HttpResponse.BodyHandlers.ofByteArray()).orTimeout(2, TimeUnit.SECONDS)
                 .thenApply(response -> {
                     if (response.statusCode() < 200 || response.statusCode() >= 300 || response.body().length > 65536)
-                        throw new CompletionException(new IllegalStateException("API response rejected (HTTP " + response.statusCode() + ")"));
+                        throw new CompletionException(ApiFailure.fromResponse(response.statusCode(), response.body()));
                     return new String(response.body(), StandardCharsets.UTF_8);
                 }).whenComplete((result, error) -> slots.release());
         } catch (RuntimeException e) { slots.release(); return CompletableFuture.failedFuture(e); }

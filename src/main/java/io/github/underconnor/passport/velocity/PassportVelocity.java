@@ -39,6 +39,8 @@ public final class PassportVelocity {
         final String gameSession = UUID.randomUUID().toString();
         final AtomicBoolean refreshing = new AtomicBoolean(), linking = new AtomicBoolean(), moving = new AtomicBoolean();
         final AtomicLong lastCommand = new AtomicLong(), linkGeneration = new AtomicLong();
+        final RoutingAttempts routing = new RoutingAttempts();
+        volatile LinkCompletionPoller completion;
         volatile String linkId;
         volatile Instant linkExpiry;
         volatile long nextRefresh;
@@ -78,9 +80,17 @@ public final class PassportVelocity {
         Session session = new Session(player);
         sessions.put(player.getUniqueId(), session);
     }
-    @Subscribe(order=PostOrder.LAST) public void initial(PlayerChooseInitialServerEvent event) {
-        if (!ready) { event.getPlayer().disconnect(DENIED); return; }
-        proxy.getServer(waiting).ifPresentOrElse(event::setInitialServer, () -> event.getPlayer().disconnect(DENIED));
+    @Subscribe(order=PostOrder.LAST) public EventTask initial(PlayerChooseInitialServerEvent event) {
+        Session session = sessions.get(event.getPlayer().getUniqueId());
+        if (!ready || session == null || !current(session)) { event.getPlayer().disconnect(DENIED); return null; }
+        RegisteredServer fallback = proxy.getServer(waiting).orElse(null);
+        if (fallback == null) { event.getPlayer().disconnect(DENIED); return null; }
+        event.setInitialServer(fallback);
+        return EventTask.resumeWhenComplete(refreshes.fresh(session.player.getUniqueId()).handle((policy,error) -> {
+            if (current(session) && error == null && policies.allows(session.player.getUniqueId(),defaultServer,Instant.now()))
+                proxy.getServer(defaultServer).ifPresent(event::setInitialServer);
+            return null;
+        }));
     }
     @Subscribe(order=PostOrder.LAST) public EventTask beforeConnect(ServerPreConnectEvent event) {
         RegisteredServer target = event.getResult().getServer().orElse(null);
@@ -101,6 +111,7 @@ public final class PassportVelocity {
     }
     @Subscribe public void connected(ServerConnectedEvent event) {
         Session session = sessions.get(event.getPlayer().getUniqueId());
+        if (session != null && event.getServer().getServerInfo().getName().equals(defaultServer)) session.routing.succeeded();
         if (session != null && event.getServer().getServerInfo().getName().equals(waiting)) {
             refresh(session).whenComplete((valid,error) -> {
                 if (!current(session)) return;
@@ -117,6 +128,9 @@ public final class PassportVelocity {
         if (!ready || event.getServer().getServerInfo().getName().equals(waiting)) {
             event.setResult(KickedFromServerEvent.DisconnectPlayer.create(DENIED));
         } else {
+            Session session = sessions.get(event.getPlayer().getUniqueId());
+            if (session != null && event.getServer().getServerInfo().getName().equals(defaultServer)
+                && session.routing.failed(System.nanoTime())) routingFailure(session);
             proxy.getServer(waiting).ifPresentOrElse(server -> event.setResult(KickedFromServerEvent.RedirectPlayer.create(server, DENIED)),
                 () -> event.setResult(KickedFromServerEvent.DisconnectPlayer.create(DENIED)));
         }
@@ -144,6 +158,9 @@ public final class PassportVelocity {
         for (Session session : sessions.values()) {
             if (!current(session)) continue;
             enforce(session);
+            LinkCompletionPoller completion = session.completion;
+            if (completion != null) completion.tick();
+            moveDefault(session);
             if (now >= session.nextRefresh && session.refreshing.compareAndSet(false, true)) {
                 session.nextRefresh = now + TimeUnit.SECONDS.toNanos(20 + ThreadLocalRandom.current().nextInt(6));
                 refresh(session).whenComplete((valid,error) -> {
@@ -173,9 +190,38 @@ public final class PassportVelocity {
     private void moveDefault(Session session) {
         if (!current(session)) return;
         String currentServer = session.player.getCurrentServer().map(c -> c.getServerInfo().getName()).orElse("");
-        policies.get(session.player.getUniqueId())
+        RegisteredServer target = policies.get(session.player.getUniqueId())
             .flatMap(policy -> AutomaticRouting.target(policy, currentServer, waiting, defaultServer, Instant.now()))
-            .flatMap(proxy::getServer).ifPresent(server -> session.player.createConnectionRequest(server).connect());
+            .flatMap(proxy::getServer).orElse(null);
+        if (target == null) return;
+        long attempt = session.routing.begin(System.nanoTime());
+        if (attempt == 0) return;
+        try {
+            session.player.createConnectionRequest(target).connect().orTimeout(3,TimeUnit.SECONDS).whenComplete((result,error) -> {
+                if (session.routing.complete(attempt,error == null && result.isSuccessful(),System.nanoTime()) && current(session)) routingFailure(session);
+            });
+        } catch (RuntimeException error) {
+            if (session.routing.complete(attempt,false,System.nanoTime())) routingFailure(session);
+        }
+    }
+    private void routingFailure(Session session) {
+        if (current(session)) session.player.sendMessage(Component.text("로비에 연결하지 못했습니다. 잠시 자동 재시도하며, 계속 실패하면 /passport status로 다시 확인하세요.",NamedTextColor.YELLOW));
+    }
+    private boolean currentLink(Session session, String id, long generation) {
+        return current(session) && session.linkGeneration.get() == generation && Objects.equals(session.linkId,id);
+    }
+    private void linked(Session session, String id, long generation) {
+        if (!currentLink(session,id,generation)) return;
+        refreshes.fresh(session.player.getUniqueId()).whenComplete((policy,error) -> {
+            if (!currentLink(session,id,generation)) return;
+            if (error != null) session.player.sendMessage(Component.text("계정 연결은 완료됐지만 서버 권한 확인이 지연되고 있습니다. 접속을 유지하면 자동으로 다시 확인합니다.",NamedTextColor.YELLOW));
+            else if (!policies.allows(session.player.getUniqueId(),defaultServer,Instant.now()))
+                session.player.sendMessage(Component.text("계정 연결은 완료됐지만 현재 로비 입장 권한이 없습니다. 웹의 회원 상태를 확인하세요.",NamedTextColor.YELLOW));
+            else {
+                session.player.sendMessage(Component.text("계정 연결이 완료되었습니다. 로비로 자동 이동합니다.",NamedTextColor.GREEN));
+                moveDefault(session);
+            }
+        });
     }
     private void createLink(Session session) {
         if (!current(session) || !session.linking.compareAndSet(false,true)) return;
@@ -189,7 +235,7 @@ public final class PassportVelocity {
                     if (error == null) api.cancel(link.get("id").getAsString(),session.player.getUniqueId(),session.gameSession).exceptionally(e -> null);
                     return;
                 }
-                if (error != null) { session.player.sendMessage(DENIED); return; }
+                if (error != null) { linkFeedback(session, LinkFeedback.creation(error)); return; }
                 try {
                     String id = UUID.fromString(link.get("id").getAsString()).toString();
                     URI url = URI.create(link.get("url").getAsString());
@@ -198,16 +244,28 @@ public final class PassportVelocity {
                         || url.getPort()!=webOrigin.getPort() || url.getUserInfo()!=null || !expiry.isAfter(Instant.now())
                         || expiry.isAfter(Instant.now().plusSeconds(305))) throw new IllegalArgumentException("link");
                     session.linkId=id; session.linkExpiry=expiry;
-                    session.player.sendMessage(Component.text("[u-SAINT 인증하기]", NamedTextColor.AQUA).clickEvent(ClickEvent.openUrl(url.toString()))
-                        .append(Component.text("  [인증 완료 확인]",NamedTextColor.GREEN).clickEvent(ClickEvent.runCommand("/passport confirm"))));
-                    session.player.sendMessage(Component.text("웹에서 계정을 확인한 뒤 /passport confirm. 취소: /passport cancel",NamedTextColor.GRAY));
+                    session.completion = new LinkCompletionPoller(id,expiry,() -> currentLink(session,id,generation),Instant::now,
+                        () -> api.gameInspect(id,session.player.getUniqueId(),session.gameSession),
+                        () -> api.confirm(id,session.player.getUniqueId(),session.gameSession)
+                            .thenApply(value -> LinkInspection.confirmationStatus(value,id,expiry,Instant.now())),
+                        () -> linked(session,id,generation), feedback -> { if (currentLink(session,id,generation)) linkFeedback(session,feedback); });
+                    session.player.sendMessage(Component.text("[u-SAINT 인증하기]", NamedTextColor.AQUA).clickEvent(ClickEvent.openUrl(url.toString())));
+                    session.player.sendMessage(Component.text("게임 접속을 유지한 채 웹에서 계정 연결을 확인하면 로비로 자동 이동합니다. 취소: /passport cancel",NamedTextColor.GRAY));
                 } catch (RuntimeException e) { session.player.sendMessage(DENIED); }
             });
     }
     private CompletableFuture<Void> cancel(Session session) {
         session.linkGeneration.incrementAndGet();
+        LinkCompletionPoller completion = session.completion; session.completion=null;
+        if (completion != null) completion.stop();
         String id=session.linkId; session.linkId=null; session.linkExpiry=null;
         return id==null || api==null ? CompletableFuture.completedFuture(null) : api.cancel(id,session.player.getUniqueId(),session.gameSession);
+    }
+    private void linkFeedback(Session session, LinkFeedback feedback) {
+        if (!current(session)) return;
+        session.player.sendMessage(Component.text(feedback.message(), NamedTextColor.YELLOW));
+        if (feedback.refreshPolicy())
+            refresh(session).thenAccept(valid -> { if (valid && current(session)) moveDefault(session); }).exceptionally(error -> null);
     }
     private final class PassportCommand implements SimpleCommand {
         @Override public void execute(Invocation invocation) {
@@ -223,17 +281,18 @@ public final class PassportVelocity {
                 case "confirm" -> {
                     String id=session.linkId;
                     if(id==null || session.linkExpiry==null || !session.linkExpiry.isAfter(Instant.now())) { player.sendMessage(Component.text("유효한 연결 요청이 없습니다. /passport 로 시작하세요.")); return; }
-                    api.confirm(id,player.getUniqueId(),session.gameSession).whenComplete((result,error) -> {
-                        if(!current(session)) return;
-                        if(error!=null) { player.sendMessage(DENIED); return; }
-                        player.sendMessage(Component.text("linked".equals(result.get("status").getAsString()) ? "계정 연결이 완료되었습니다." : "게임 확인 완료. 웹에서 계정 연결을 확인하세요."));
-                        refresh(session).thenAccept(valid -> { if(valid && current(session)) moveDefault(session); }).exceptionally(e -> null);
-                    });
+                    LinkCompletionPoller completion = session.completion;
+                    if (completion == null || completion.stopped()) {
+                        player.sendMessage(Component.text("연결 상태는 /passport status로 확인하세요. 새 연결은 /passport 로 시작합니다."));
+                        return;
+                    }
+                    completion.confirmManually();
                 }
                 case "status" -> refresh(session).whenComplete((valid,error) -> {
                     if(!current(session)) return;
                     if(error!=null || !Boolean.TRUE.equals(valid)) { player.sendMessage(DENIED); return; }
                     policies.get(player.getUniqueId()).ifPresent(policy -> player.sendMessage(Component.text("Passport: "+policy.status()+" | 허용 서버: "+String.join(", ",policy.allowedServerIds()))));
+                    session.routing.retryManually();
                     moveDefault(session);
                 });
                 default -> player.sendMessage(Component.text("/passport [status|confirm|cancel]"));
