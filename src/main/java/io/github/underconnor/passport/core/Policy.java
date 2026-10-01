@@ -6,9 +6,10 @@ import java.util.*;
 
 public record Policy(UUID minecraftUuid, String status, Set<String> allowedServerIds,
                      String roleLabel, String displayName, long version, Instant issuedAt, Instant expiresAt,
-                     boolean member, String admissionYear, boolean administrator, Map<String,String> serverLabels, boolean telemetryEnabled, UUID telemetryEpoch) {
+                     boolean member, String admissionYear, boolean administrator, Map<String,String> serverLabels, boolean telemetryEnabled, UUID telemetryEpoch,
+                     Set<String> telemetryServerIds, boolean presenceEnabled) {
     public Policy(UUID uuid, String status, Set<String> ids, String role, String name, long version, Instant issued, Instant expires, boolean member, String year, boolean admin, Map<String,String> labels) {
-        this(uuid,status,ids,role,name,version,issued,expires,member,year,admin,labels,false,null);
+        this(uuid,status,ids,role,name,version,issued,expires,member,year,admin,labels,false,null,Set.of(),false);
     }
     public Policy(UUID uuid, String status, Set<String> ids, String role, String name, long version, Instant issued, Instant expires) {
         this(uuid,status,ids,role,name,version,issued,expires,false,null,false,Map.of());
@@ -54,9 +55,23 @@ public record Policy(UUID minecraftUuid, String status, Set<String> allowedServe
         boolean telemetryEnabled=telemetry!=null && telemetry.get("enabled").getAsBoolean();
         UUID epoch=telemetry!=null && !telemetry.get("epoch").isJsonNull() ? UUID.fromString(telemetry.get("epoch").getAsString()) : null;
         if(telemetryEnabled != (epoch!=null) || (telemetryEnabled && !status.equals("active"))) throw new IllegalArgumentException("telemetry");
+        Set<String> telemetryServers=new HashSet<>();
+        if(telemetry!=null && telemetry.has("serverIds")) for(JsonElement item:telemetry.getAsJsonArray("serverIds")) {
+            if(!item.isJsonPrimitive() || !item.getAsJsonPrimitive().isString()) throw new IllegalArgumentException("telemetry server");
+            String id=item.getAsString();
+            if(!ids.contains(id) || !telemetryServers.add(id)) throw new IllegalArgumentException("telemetry server");
+        }
+        if(!telemetryEnabled && !telemetryServers.isEmpty()) throw new IllegalArgumentException("disabled telemetry servers");
+        boolean presenceEnabled=false;
+        if(telemetry!=null && telemetry.has("presenceEnabled")) {
+            JsonElement item=telemetry.get("presenceEnabled");
+            if(!item.isJsonPrimitive() || !item.getAsJsonPrimitive().isBoolean()) throw new IllegalArgumentException("presence");
+            presenceEnabled=item.getAsBoolean();
+            if(presenceEnabled && !status.equals("active")) throw new IllegalArgumentException("inactive presence");
+        }
         // Older APIs did not advertise expanded game consent: do not expose their displayName as a real name.
         if(telemetry==null) { name=""; member=false; year=null; }
-        return new Policy(uuid, status, Set.copyOf(ids), role, name, version, issued, expiry,member,year,administrator,Map.copyOf(labels),telemetryEnabled,epoch);
+        return new Policy(uuid, status, Set.copyOf(ids), role, name, version, issued, expiry,member,year,administrator,Map.copyOf(labels),telemetryEnabled,epoch,Set.copyOf(telemetryServers),presenceEnabled);
     }
     private static String plain(String value, int limit) {
         if (value.codePointCount(0,value.length()) > limit || value.codePoints().anyMatch(Character::isISOControl))
@@ -66,6 +81,9 @@ public record Policy(UUID minecraftUuid, String status, Set<String> allowedServe
     public boolean valid(Instant now) { return expiresAt.isAfter(now) && !issuedAt.isAfter(now.plusSeconds(2)); }
     public boolean active(Instant now) { return "active".equals(status) && valid(now); }
     public String label(String id) { return serverLabels.getOrDefault(id,id); }
+    public boolean collectsStatistics(String serverId,Instant now) {
+        return telemetryEnabled && telemetryEpoch!=null && telemetryServerIds.contains(serverId) && allows(serverId,now);
+    }
     public boolean allows(String serverId, Instant now) {
         return "active".equals(status) && expiresAt.isAfter(now) && !issuedAt.isAfter(now.plusSeconds(2)) && allowedServerIds.contains(serverId);
     }

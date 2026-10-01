@@ -12,6 +12,7 @@ import com.velocitypowered.api.event.proxy.*;
 import com.velocitypowered.api.plugin.Plugin;
 import com.velocitypowered.api.proxy.*;
 import com.velocitypowered.api.proxy.server.RegisteredServer;
+import com.velocitypowered.api.proxy.messages.MinecraftChannelIdentifier;
 import io.github.underconnor.passport.core.*;
 import net.kyori.adventure.text.Component;
 import net.kyori.adventure.text.event.ClickEvent;
@@ -30,6 +31,9 @@ public final class PassportVelocity {
     private final PolicyCache policies = new PolicyCache();
     private final Map<UUID, Session> sessions = new ConcurrentHashMap<>();
     private ApiClient api;
+    private String teleportSecret;
+    private final TeleportRequests teleports=new TeleportRequests();
+    private static final MinecraftChannelIdentifier TELEPORT_CHANNEL=MinecraftChannelIdentifier.from(TeleportMessage.CHANNEL);
     private PolicyRefreshes refreshes;
     private PolicyEventPoller eventPoller;
     private ServerHeartbeat heartbeat;
@@ -67,6 +71,8 @@ public final class PassportVelocity {
             if(!"https".equals(adminOrigin.getScheme()) || adminOrigin.getHost()==null || adminOrigin.getUserInfo()!=null || adminOrigin.getQuery()!=null || adminOrigin.getFragment()!=null) throw new IllegalArgumentException("Invalid admin origin");
             api = new ApiClient(ApiClient.env("PASSPORT_API_BASE_URL", "https://api.passport.example/"),
                 System.getenv("API_SERVICE_TOKEN"), Boolean.parseBoolean(ApiClient.env("PASSPORT_ALLOW_INSECURE_HTTP", "false")));
+            teleportSecret=System.getenv("API_SERVICE_TOKEN");
+            proxy.getChannelRegistrar().register(TELEPORT_CHANNEL);
             refreshes = new PolicyRefreshes(uuid -> api.policy(uuid).thenApply(policy -> {
                 if (!policies.acceptOrCurrent(policy)) throw new CompletionException(new IllegalStateException("Stale policy response"));
                 return policy;
@@ -159,7 +165,7 @@ public final class PassportVelocity {
         Session session = sessions.get(event.getPlayer().getUniqueId());
         if (session != null && session.player == event.getPlayer() && sessions.remove(event.getPlayer().getUniqueId(), session)) cancel(session);
     }
-    @Subscribe public void shutdown(ProxyShutdownEvent event) { ready = false; if (api != null) api.close(); }
+    @Subscribe public void shutdown(ProxyShutdownEvent event) { ready = false; teleports.close(); proxy.getChannelRegistrar().unregister(TELEPORT_CHANNEL); if (api != null) api.close(); }
     private boolean current(Session session) { return ready && session.player.isActive() && sessions.get(session.player.getUniqueId()) == session; }
     private CompletableFuture<Boolean> refresh(Session session) {
         if (!current(session)) return CompletableFuture.completedFuture(false);
@@ -225,7 +231,7 @@ public final class PassportVelocity {
         }
     }
     private void routingFailure(Session session) {
-        if (current(session)) session.player.sendMessage(Component.text("로비에 연결하지 못했습니다. 잠시 자동 재시도하며, 계속 실패하면 /passport status로 다시 확인하세요.",NamedTextColor.YELLOW));
+        if (current(session)) session.player.sendMessage(Component.text("로비 연결을 재시도합니다. /passport status",NamedTextColor.YELLOW));
     }
     private boolean currentLink(Session session, String id, long generation) {
         return current(session) && session.linkGeneration.get() == generation && Objects.equals(session.linkId,id);
@@ -238,7 +244,7 @@ public final class PassportVelocity {
             else if (!policies.allows(session.player.getUniqueId(),defaultServer,Instant.now()))
                 session.player.sendMessage(Component.text("계정 연결은 완료됐지만 현재 로비 입장 권한이 없습니다. 웹의 회원 상태를 확인하세요.",NamedTextColor.YELLOW));
             else {
-                session.player.sendMessage(Component.text("계정 연결이 완료되었습니다. 로비로 자동 이동합니다.",NamedTextColor.GREEN));
+                session.player.sendMessage(Component.text("Passport 시스템 등록 완료",NamedTextColor.GREEN));
                 moveDefault(session);
             }
         });
@@ -269,7 +275,7 @@ public final class PassportVelocity {
                         () -> api.confirm(id,session.player.getUniqueId(),session.gameSession)
                             .thenApply(value -> LinkInspection.confirmationStatus(value,id,expiry,Instant.now())),
                         () -> linked(session,id,generation), feedback -> { if (currentLink(session,id,generation)) linkFeedback(session,feedback); });
-                    session.player.sendMessage(Component.text("숭실대학교 AI소프트웨어학부 소모임 오버월드 인증 시스템 passport",NamedTextColor.AQUA));
+                    session.player.sendMessage(Component.text("숭실대학교 AI소프트웨어학부 소모임 오버월드 인증 시스템 passport",NamedTextColor.WHITE));
                     session.player.sendMessage(Component.text("서버 연결을 위해 u-saint 연동이 필요합니다. 아래 버튼을 눌러 연동을 진행해주세요.",NamedTextColor.WHITE));
                     session.player.sendMessage(Component.text("[u-saint 연동하기]", NamedTextColor.GREEN).clickEvent(ClickEvent.openUrl(url.toString())));
                 } catch (RuntimeException e) { session.player.sendMessage(DENIED); }
@@ -291,7 +297,7 @@ public final class PassportVelocity {
     @Subscribe(order=PostOrder.LAST) public void blockBuiltin(CommandExecuteEvent event) {
         if(event.getCommandSource() instanceof Player && CommandSelection.blockedBuiltin(event.getCommand())) {
             event.setResult(CommandExecuteEvent.CommandResult.denied());
-            event.getCommandSource().sendMessage(Component.text("서버 이동은 /서버 <서버명> 또는 /passport server <서버명>을 사용하세요.",NamedTextColor.YELLOW));
+            event.getCommandSource().sendMessage(Component.text("/서버 <서버명>",NamedTextColor.YELLOW));
         }
     }
     private void web(CommandSource source,boolean admin) {
@@ -310,7 +316,7 @@ public final class PassportVelocity {
     }
     private List<Player> players(String query) {
         return sessions.values().stream().filter(this::current).filter(session ->
-            session.player.getUsername().equalsIgnoreCase(query) || policies.get(session.player.getUniqueId())
+            session.player.getUsername().equalsIgnoreCase(query) || session.player.getUniqueId().toString().equalsIgnoreCase(query) || policies.get(session.player.getUniqueId())
                 .filter(policy -> policy.active(Instant.now())).map(policy -> !policy.displayName().isBlank() && policy.displayName().equals(query)).orElse(false))
             .map(session -> session.player).sorted(Comparator.comparing(Player::getUsername)).toList();
     }
@@ -339,9 +345,9 @@ public final class PassportVelocity {
                 if(response.get("available").getAsBoolean()) {
                     var totals=response.getAsJsonObject("totals"); long seconds=totals.get("playSeconds").getAsLong();
                     session.player.sendMessage(Component.text("총 플레이 "+(seconds/3600)+"시간 "+((seconds%3600)/60)+"분 · 사망 "+totals.get("deaths").getAsLong()+"회",NamedTextColor.GRAY));
-                } else session.player.sendMessage(Component.text("플레이 기록은 웹에서 게임 정보 동의와 수집 상태를 확인해 주세요.",NamedTextColor.GRAY));
+                } else session.player.sendMessage(Component.text("집계된 플레이 기록이 없습니다.",NamedTextColor.GRAY));
             } catch(RuntimeException malformed) { session.player.sendMessage(Component.text("플레이 기록을 확인할 수 없습니다.",NamedTextColor.GRAY)); }
-            else session.player.sendMessage(Component.text("플레이 기록 확인이 지연되고 있습니다.",NamedTextColor.GRAY));
+            else session.player.sendMessage(Component.text("플레이 기록을 확인할 수 없습니다.",NamedTextColor.GRAY));
             session.player.sendMessage(Component.text("[상세 기록 보기]",NamedTextColor.AQUA).clickEvent(ClickEvent.openUrl(webOrigin.resolve("/me/stats").toString())));
         });
     }
@@ -365,6 +371,9 @@ public final class PassportVelocity {
             List<String> ids=CommandSelection.servers(policy,query);
             if(ids.size()!=1) { session.player.sendMessage(Component.text(ids.isEmpty() ? "접속 가능한 서버를 찾을 수 없습니다." : "같은 서버 이름이 여러 개입니다. 서버 ID로 지정하세요.")); return; }
             String id=ids.getFirst();
+            if(session.player.getCurrentServer().map(connection -> connection.getServerInfo().getName().equals(id)).orElse(false)) {
+                session.player.sendMessage(Component.text("이미 접속 중인 서버입니다.")); return;
+            }
             proxy.getServer(id).ifPresentOrElse(target -> {
                 if(!policy.allows(id,Instant.now())) { session.player.sendMessage(DENIED); return; }
                 session.player.createConnectionRequest(target).connect().orTimeout(3,TimeUnit.SECONDS).whenComplete((result,failure) -> {
@@ -381,9 +390,68 @@ public final class PassportVelocity {
         }
         @Override public List<String> suggest(Invocation invocation) { return serverSuggestions(invocation.source(),String.join(" ",invocation.arguments())); }
     }
+    private boolean canSuggestAdmin(CommandSource source) {
+        return !(source instanceof Player player) || source.getPermissionValue("passport.admin")!=Tristate.FALSE
+            && sessions.containsKey(player.getUniqueId()) && policies.get(player.getUniqueId())
+                .filter(policy -> policy.active(Instant.now()) && policy.administrator()).isPresent();
+    }
+    private List<String> playerSuggestions(CommandSource source,String prefix) {
+        if(!canSuggestAdmin(source)) return List.of();
+        List<String> names=new ArrayList<>();
+        for(Session session:sessions.values()) if(current(session)) {
+            names.add(session.player.getUsername());
+            policies.get(session.player.getUniqueId()).filter(policy -> policy.active(Instant.now()))
+                .map(Policy::displayName).filter(name -> !name.isBlank()).ifPresent(names::add);
+        }
+        return CommandSelection.suggestions(names,prefix);
+    }
     private List<String> serverSuggestions(CommandSource source,String prefix) {
         return source instanceof Player player ? policies.get(player.getUniqueId()).filter(policy -> policy.active(Instant.now()))
-            .map(policy -> policy.allowedServerIds().stream().filter(id -> id.startsWith(prefix)).sorted().toList()).orElse(List.of()) : List.of();
+            .map(policy -> {
+                List<String> names=new ArrayList<>(policy.allowedServerIds());
+                for(String id:policy.allowedServerIds()) if(!policy.label(id).contains(" ")) names.add(policy.label(id));
+                return CommandSelection.suggestions(names,prefix);
+            }).orElse(List.of()) : List.of();
+    }
+    @Subscribe(order=PostOrder.FIRST) public void teleportReply(PluginMessageEvent event) {
+        if(!TELEPORT_CHANNEL.equals(event.getIdentifier())) return;
+        event.setResult(PluginMessageEvent.ForwardResult.handled());
+        if(!ready || !(event.getSource() instanceof ServerConnection backend) || !(event.getTarget() instanceof Player player)
+            || backend.getPlayer()!=player || player.getCurrentServer().orElse(null)!=backend) return;
+        try {
+            var message=TeleportMessage.decode(event.getData(),teleportSecret,Instant.now());
+            teleports.accept(message,backend.getServerInfo().getName(),player.getUniqueId(),Instant.now());
+        } catch(IllegalArgumentException ignored) { /* Untrusted packets never reach players or trigger actions. */ }
+    }
+    private void teleport(Session session,Player target) {
+        if(session.player.getUniqueId().equals(target.getUniqueId())) { session.player.sendMessage(Component.text("자신에게 이동할 수 없습니다.")); return; }
+        ServerConnection targetConnection=target.getCurrentServer().orElse(null);
+        if(targetConnection==null) { session.player.sendMessage(Component.text("대상이 아직 서버에 입장하지 않았습니다.")); return; }
+        String destination=targetConnection.getServerInfo().getName();
+        refreshes.fresh(session.player.getUniqueId()).whenComplete((policy,error) -> {
+            if(!current(session)) return;
+            if(error!=null || !policy.administrator() || !policy.allows(destination,Instant.now())
+                || session.player.getPermissionValue("passport.admin")==Tristate.FALSE) { session.player.sendMessage(DENIED); return; }
+            var request=TeleportMessage.request(session.player.getUniqueId(),target.getUniqueId(),destination,Instant.now());
+            var result=teleports.begin(request);
+            if(result.isCompletedExceptionally()) { session.player.sendMessage(Component.text("이동을 처리 중입니다.")); return; }
+            result.orTimeout(12,TimeUnit.SECONDS).whenComplete((status,failure) -> {
+                if(current(session)) session.player.sendMessage(Component.text(failure==null && "ok".equals(status)
+                    ? target.getUsername()+"님에게 이동했습니다." : "대상에게 이동하지 못했습니다. 접속 상태와 권한을 확인하세요."));
+            });
+            Runnable send=() -> {
+                if(!current(session) || target.getCurrentServer().orElse(null)!=targetConnection) { teleports.fail(request.requestId()); return; }
+                ServerConnection backend=session.player.getCurrentServer().orElse(null);
+                if(backend==null || !backend.getServerInfo().getName().equals(destination)
+                    || !backend.sendPluginMessage(TELEPORT_CHANNEL,request.encode(teleportSecret))) teleports.fail(request.requestId());
+            };
+            if(session.player.getCurrentServer().map(connection -> connection.getServerInfo().getName().equals(destination)).orElse(false)) send.run();
+            else session.player.createConnectionRequest(targetConnection.getServer()).connect().orTimeout(4,TimeUnit.SECONDS)
+                .whenComplete((connection,failure) -> {
+                    if(failure!=null || !connection.isSuccessful()) teleports.fail(request.requestId());
+                    else proxy.getScheduler().buildTask(this,send).delay(Duration.ofMillis(300)).schedule();
+                });
+        });
     }
     private final class PassportCommand implements SimpleCommand {
         @Override public void execute(Invocation invocation) {
@@ -401,7 +469,7 @@ public final class PassportVelocity {
                     Player target=uniquePlayer(source,value); if(target==null) return;
                     if(!(source instanceof Player player)) { source.sendMessage(Component.text("게임 내에서 사용하세요.")); return; }
                     Session session=sessions.get(player.getUniqueId()); if(session==null || !current(session)) return;
-                    target.getCurrentServer().ifPresentOrElse(connection -> transfer(session,connection.getServerInfo().getName()),() -> source.sendMessage(Component.text("대상이 아직 서버에 입장하지 않았습니다.")));
+                    if(commandReady(session)) teleport(session,target);
                 }); return;
             }
             if (!(invocation.source() instanceof Player player)) { invocation.source().sendMessage(Component.text("게임 내에서 사용하세요.")); return; }
@@ -414,16 +482,6 @@ public final class PassportVelocity {
                 case "link" -> createLink(session);
                 case "web" -> web(player,false);
                 case "server" -> transfer(session,String.join(" ",Arrays.copyOfRange(args,1,args.length)));
-                case "confirm" -> {
-                    String id=session.linkId;
-                    if(id==null || session.linkExpiry==null || !session.linkExpiry.isAfter(Instant.now())) { player.sendMessage(Component.text("유효한 연결 요청이 없습니다. /passport 로 시작하세요.")); return; }
-                    LinkCompletionPoller completion = session.completion;
-                    if (completion == null || completion.stopped()) {
-                        player.sendMessage(Component.text("연결 상태는 /passport status로 확인하세요. 새 연결은 /passport 로 시작합니다."));
-                        return;
-                    }
-                    completion.confirmManually();
-                }
                 case "status" -> refresh(session).whenComplete((valid,error) -> {
                     if(!current(session)) return;
                     if(error!=null || !Boolean.TRUE.equals(valid)) { player.sendMessage(DENIED); return; }
@@ -432,16 +490,18 @@ public final class PassportVelocity {
                     session.routing.retryManually();
                     moveDefault(session);
                 });
-                default -> player.sendMessage(Component.text("/passport [server|status|web|confirm]"));
+                default -> player.sendMessage(Component.text("/passport [server|status|web]"));
             }
         }
         @Override public List<String> suggest(Invocation invocation) {
             String[] args=invocation.arguments();
             if(args.length>1 && args[0].equalsIgnoreCase("server")) return serverSuggestions(invocation.source(),String.join(" ",Arrays.copyOfRange(args,1,args.length)));
+            if(args.length==2 && Set.of("player","tp").contains(args[0].toLowerCase(Locale.ROOT)))
+                return playerSuggestions(invocation.source(),args[1]);
             if(args.length>1) return List.of();
-            List<String> commands=new ArrayList<>(List.of("server","status","web","link","confirm"));
-            if(!(invocation.source() instanceof Player player) || policies.get(player.getUniqueId()).filter(policy -> policy.valid(Instant.now()) && policy.administrator()).isPresent()) commands.addAll(List.of("player","adminweb","tp","announce"));
-            String prefix=args.length==0 ? "" : args[0]; return commands.stream().filter(command -> command.startsWith(prefix)).toList();
+            List<String> commands=new ArrayList<>(List.of("server","status","web","link"));
+            if(canSuggestAdmin(invocation.source())) commands.addAll(List.of("player","adminweb","tp","announce"));
+            String prefix=args.length==0 ? "" : args[0].toLowerCase(Locale.ROOT); return commands.stream().filter(command -> command.startsWith(prefix)).toList();
         }
     }
 }

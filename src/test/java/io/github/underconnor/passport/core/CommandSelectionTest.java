@@ -10,6 +10,12 @@ class CommandSelectionTest {
         assertEquals(List.of("build","lobby"),CommandSelection.servers(policy,"공용"));
         assertTrue(CommandSelection.servers(policy,"secret").isEmpty());
     }
+    @Test void suggestionsHandleCaseKoreanDuplicatesAndResultBound() {
+        assertEquals(List.of("Player"),CommandSelection.suggestions(List.of("Player","Player","Else"),"pl"));
+        assertEquals(List.of("정지원"),CommandSelection.suggestions(List.of("정지원","김테스트"),"정"));
+        assertTrue(CommandSelection.suggestions(List.of("bad\ncommand"),"").isEmpty());
+        assertEquals(50,CommandSelection.suggestions(java.util.stream.IntStream.range(0,100).mapToObj(i -> "player"+i).toList(),"").size());
+    }
     @Test void builtinAndNamespaceAreBlockedWithoutBlockingOtherCommands() {
         for(String cmd:List.of("server", " SeRvEr lobby", "velocity:server private")) assertTrue(CommandSelection.blockedBuiltin(cmd));
         for(String cmd:List.of("passport server lobby","serverinfo","other:server")) assertFalse(CommandSelection.blockedBuiltin(cmd));

@@ -7,6 +7,12 @@ public final class CommandSelection {
         List<String> byId=policy.allowedServerIds().stream().filter(id -> id.equalsIgnoreCase(query)).sorted().toList();
         return byId.isEmpty() ? policy.allowedServerIds().stream().filter(id -> policy.label(id).equalsIgnoreCase(query)).sorted().toList() : byId;
     }
+    public static List<String> suggestions(Collection<String> candidates,String prefix) {
+        String normalized=prefix.toLowerCase(Locale.ROOT);
+        return candidates.stream().filter(value -> !value.isBlank() && value.codePoints().noneMatch(Character::isISOControl))
+            .filter(value -> value.toLowerCase(Locale.ROOT).startsWith(normalized)).distinct()
+            .sorted(String.CASE_INSENSITIVE_ORDER).limit(50).toList();
+    }
     public static boolean blockedBuiltin(String command) {
         String root=command.stripLeading().split("\\s+",2)[0].toLowerCase(Locale.ROOT);
         return root.equals("server") || root.equals("velocity:server");

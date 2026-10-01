@@ -6,8 +6,8 @@ public record LinkFeedback(String message, boolean refreshPolicy) {
 
     public static LinkFeedback confirmation(Throwable error) {
         return switch (ApiFailure.reasonOf(error)) {
-            case GAME_CONFIRMATION_CONSUMED -> new LinkFeedback("게임 확인은 이미 완료되었습니다. 웹의 계정 연결 화면에서 연결을 확인하세요.", false);
-            case LINK_EXPIRED -> new LinkFeedback("연결 요청이 만료되었습니다. /passport 로 새 링크를 받아 웹과 게임에서 확인하세요.", false);
+            case GAME_CONFIRMATION_CONSUMED -> new LinkFeedback("웹에서 계정 연결을 완료해 주세요.", false);
+            case LINK_EXPIRED -> new LinkFeedback("연결 요청이 만료되었습니다. /passport 로 새 링크를 받으세요.", false);
             case LINK_CONSUMED -> new LinkFeedback("연결 요청이 완료되었거나 취소되었습니다. /passport status로 현재 상태를 확인하세요.", true);
             case GAME_SESSION_MISMATCH -> new LinkFeedback("현재 접속과 연결 요청의 세션이 다릅니다. /passport 로 새 연결을 시작하세요.", false);
             case LINK_NOT_FOUND -> new LinkFeedback("연결 요청을 찾을 수 없습니다. /passport 로 새 연결을 시작하세요.", false);

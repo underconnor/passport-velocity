@@ -20,7 +20,7 @@ class LinkFeedbackTest {
                 () -> api.confirm(UUID.randomUUID().toString(), UUID.randomUUID(), "synthetic-session").get(3, TimeUnit.SECONDS));
             assertEquals(ApiFailure.Reason.GAME_CONFIRMATION_CONSUMED, ApiFailure.reasonOf(error));
             LinkFeedback feedback = LinkFeedback.confirmation(error);
-            assertTrue(feedback.message().contains("이미 완료"));
+            assertFalse(feedback.message().contains("/passport confirm"));
             assertTrue(feedback.message().contains("웹"));
             assertFalse(feedback.refreshPolicy());
         });
