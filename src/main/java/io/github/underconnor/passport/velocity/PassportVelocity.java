@@ -269,8 +269,9 @@ public final class PassportVelocity {
                         () -> api.confirm(id,session.player.getUniqueId(),session.gameSession)
                             .thenApply(value -> LinkInspection.confirmationStatus(value,id,expiry,Instant.now())),
                         () -> linked(session,id,generation), feedback -> { if (currentLink(session,id,generation)) linkFeedback(session,feedback); });
-                    session.player.sendMessage(Component.text("[u-SAINT 인증하기]", NamedTextColor.AQUA).clickEvent(ClickEvent.openUrl(url.toString())));
-                    session.player.sendMessage(Component.text("게임 접속을 유지한 채 웹에서 계정 연결을 확인하면 로비로 자동 이동합니다. 취소: /passport cancel",NamedTextColor.GRAY));
+                    session.player.sendMessage(Component.text("숭실대학교 AI소프트웨어학부 소모임 오버월드 인증 시스템 passport",NamedTextColor.AQUA));
+                    session.player.sendMessage(Component.text("서버 연결을 위해 u-saint 연동이 필요합니다. 아래 버튼을 눌러 연동을 진행해주세요.",NamedTextColor.WHITE));
+                    session.player.sendMessage(Component.text("[u-saint 연동하기]", NamedTextColor.AQUA).clickEvent(ClickEvent.openUrl(url.toString())));
                 } catch (RuntimeException e) { session.player.sendMessage(DENIED); }
             });
     }
@@ -413,7 +414,6 @@ public final class PassportVelocity {
                 case "link" -> createLink(session);
                 case "web" -> web(player,false);
                 case "server" -> transfer(session,String.join(" ",Arrays.copyOfRange(args,1,args.length)));
-                case "cancel" -> cancel(session).whenComplete((v,e) -> { if(current(session)) player.sendMessage(Component.text(e==null ? "연결 요청을 취소했습니다." : "취소 확인에 실패했습니다. 연결 요청은 최대 5분 후 만료됩니다.")); });
                 case "confirm" -> {
                     String id=session.linkId;
                     if(id==null || session.linkExpiry==null || !session.linkExpiry.isAfter(Instant.now())) { player.sendMessage(Component.text("유효한 연결 요청이 없습니다. /passport 로 시작하세요.")); return; }
@@ -432,14 +432,14 @@ public final class PassportVelocity {
                     session.routing.retryManually();
                     moveDefault(session);
                 });
-                default -> player.sendMessage(Component.text("/passport [server|status|web|confirm|cancel]"));
+                default -> player.sendMessage(Component.text("/passport [server|status|web|confirm]"));
             }
         }
         @Override public List<String> suggest(Invocation invocation) {
             String[] args=invocation.arguments();
             if(args.length>1 && args[0].equalsIgnoreCase("server")) return serverSuggestions(invocation.source(),String.join(" ",Arrays.copyOfRange(args,1,args.length)));
             if(args.length>1) return List.of();
-            List<String> commands=new ArrayList<>(List.of("server","status","web","link","confirm","cancel"));
+            List<String> commands=new ArrayList<>(List.of("server","status","web","link","confirm"));
             if(!(invocation.source() instanceof Player player) || policies.get(player.getUniqueId()).filter(policy -> policy.active(Instant.now()) && policy.administrator()).isPresent()) commands.addAll(List.of("player","adminweb","tp","announce"));
             String prefix=args.length==0 ? "" : args[0]; return commands.stream().filter(command -> command.startsWith(prefix)).toList();
         }

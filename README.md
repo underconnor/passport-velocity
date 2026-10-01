@@ -8,7 +8,7 @@ NanoLimbo 대기 서버 안내, 웹 계정 연결, 중앙 정책에 따른 서�
 
 - online-mode 프록시의 정품 계정 접속마다 새로운 게임 세션 ID 생성
 - 최초 접속에서 비동기 정책 조회 후 허용된 기존 연결은 기본 로비로 이동. 미연결·정책 조회 실패·로비 연결 실패는 NanoLimbo로 보내며 미연결 계정에 개인 링크 발급
-- `/passport`, `/passport status`, `/passport confirm`, `/passport cancel`
+- `/passport`, `/passport status`, `/passport confirm`
 - 반복 게임 확인은 웹 연결 확인을 안내하고, 만료·소모·접속 세션 불일치를 구분해 안내. 이미 연결된 계정의 새 연결 요청은 현재 정책을 다시 확인
 - 웹에서 계정 연결을 확인하면 현재 게임 세션이 자동으로 확인을 완료하고 새 정책으로 로비 이동. 추가 게임 명령은 필요하지 않으며 `/passport confirm`은 수동 복구용으로 유지
 - UUID·게임 세션에 묶인 웹/게임 확인 API, 종료 시 pending 연결 취소 시도
@@ -107,3 +107,7 @@ UUID별 버전 기준은 로그아웃해도 프로세스 메모리에 남습니�
 `PASSPORT_ADMIN_ORIGIN` 기본값은 `https://admin-overworld.flyjung.kr`이며 HTTPS origin을 설정합니다. 개인 상세 기록 링크는 `PASSPORT_WEB_ORIGIN`의 `/me/stats`로 열립니다. 일반 게임 서버 주소는 `overworld.flyjung.kr`입니다. 격리 QA 서버와 운영 서버의 포트·설정은 배포 환경에서 관리합니다.
 
 [Velocity 공식 Command API](https://docs.papermc.io/velocity/dev/command-api/)를 기준으로 구현했습니다. 로컬 테스트·CI는 Java 25/Paper 및 Velocity API 호환성만 확인하며, 실제 정품 계정의 접속·이름·PAPI·통계·서버 이동 검증은 배포 환경에서 별도 수행해야 합니다.
+
+## 인증 대기실 안내
+
+대기실 채팅에는 정식 소모임 이름, 연결 안내, `[u-saint 연동하기]` 링크만 순서대로 보냅니다. `/passport cancel` 명령·자동완성·취소 안내는 노출하지 않습니다. 로그아웃과 새 링크 재발급은 내부적으로 이전 링크를 취소하며 기존 만료·자동 인증 확인·로비 이동 검사는 유지됩니다. title/subtitle, TAB header/footer, bossbar는 배포 저장소의 NanoLimbo 설정이 관리하므로 프록시에서 중복해서 보내지 않습니다.
