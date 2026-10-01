@@ -271,7 +271,7 @@ public final class PassportVelocity {
                         () -> linked(session,id,generation), feedback -> { if (currentLink(session,id,generation)) linkFeedback(session,feedback); });
                     session.player.sendMessage(Component.text("숭실대학교 AI소프트웨어학부 소모임 오버월드 인증 시스템 passport",NamedTextColor.AQUA));
                     session.player.sendMessage(Component.text("서버 연결을 위해 u-saint 연동이 필요합니다. 아래 버튼을 눌러 연동을 진행해주세요.",NamedTextColor.WHITE));
-                    session.player.sendMessage(Component.text("[u-saint 연동하기]", NamedTextColor.AQUA).clickEvent(ClickEvent.openUrl(url.toString())));
+                    session.player.sendMessage(Component.text("[u-saint 연동하기]", NamedTextColor.GREEN).clickEvent(ClickEvent.openUrl(url.toString())));
                 } catch (RuntimeException e) { session.player.sendMessage(DENIED); }
             });
     }
