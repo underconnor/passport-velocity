@@ -30,6 +30,14 @@ public final class ApiClient implements AutoCloseable {
     public CompletableFuture<Void> heartbeat(String source, List<ServerRegistration> servers) {
         return request("POST", "v1/minecraft/servers/heartbeat", ServerRegistration.payload(source, servers)).thenApply(ignored -> null);
     }
+    public CompletableFuture<JsonObject> players(String query) {
+        if(query.isBlank() || query.length()>80) return CompletableFuture.failedFuture(new IllegalArgumentException("query"));
+        return request("GET","v1/minecraft/players?query="+URLEncoder.encode(query,StandardCharsets.UTF_8),null)
+            .thenApply(body -> JsonParser.parseString(body).getAsJsonObject());
+    }
+    public CompletableFuture<JsonObject> statistics(UUID uuid) {
+        return request("GET","v1/minecraft/players/"+uuid+"/stats",null).thenApply(body -> JsonParser.parseString(body).getAsJsonObject());
+    }
     public CompletableFuture<Policy> policy(UUID uuid) {
         return request("GET", "v1/minecraft/policies/" + uuid, null)
             .thenApply(body -> Policy.parse(body, uuid, Instant.now()));

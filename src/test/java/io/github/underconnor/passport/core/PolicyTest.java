@@ -68,4 +68,20 @@ class PolicyTest {
         String body=json("active",1,"2026-09-30T00:00:00Z","2026-09-30T00:01:00Z").replace("\"active\"","\"revoked\"");
         assertThrows(IllegalArgumentException.class,()->Policy.parse(body,uuid,now));
     }
+    @Test void identityExtensionsAreMinimalAndLabelsCannotExposeDeniedServers() {
+        String body=json("active",1,"2026-09-30T00:00:00Z","2026-09-30T00:01:00Z")
+            .replace("\"displayName\":\"test\"","\"displayName\":\"테스트\",\"member\":true,\"admissionYear\":\"26\"")
+            .replace("\"policyVersion\":1","\"telemetry\":{\"enabled\":false,\"epoch\":null},\"administrator\":true,\"allowedServers\":[{\"id\":\"lobby\",\"label\":\"로비\"}],\"policyVersion\":1");
+        Policy policy=Policy.parse(body,uuid,now); assertTrue(policy.member()); assertEquals("26",policy.admissionYear());
+        assertTrue(policy.administrator()); assertEquals("로비",policy.label("lobby"));
+        assertThrows(IllegalArgumentException.class,() -> Policy.parse(body.replace("\"26\"","\"20260000\""),uuid,now));
+        assertThrows(IllegalArgumentException.class,() -> Policy.parse(body.replace("\"id\":\"lobby\"","\"id\":\"secret\""),uuid,now));
+    }
+    @Test void telemetryRequiresAnEpochAndActivePolicy() {
+        String body=json("active",1,"2026-09-30T00:00:00Z","2026-09-30T00:01:00Z")
+            .replace("\"policyVersion\":1","\"telemetry\":{\"enabled\":true,\"epoch\":\"33333333-3333-4333-8333-333333333333\"},\"policyVersion\":1");
+        assertTrue(Policy.parse(body,uuid,now).telemetryEnabled());
+        assertThrows(IllegalArgumentException.class,() -> Policy.parse(body.replace("\"33333333-3333-4333-8333-333333333333\"","null"),uuid,now));
+        assertThrows(IllegalArgumentException.class,() -> Policy.parse(body.replace("\"enabled\":true","\"enabled\":false"),uuid,now));
+    }
 }

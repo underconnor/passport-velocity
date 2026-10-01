@@ -5,7 +5,14 @@ import java.time.*;
 import java.util.*;
 
 public record Policy(UUID minecraftUuid, String status, Set<String> allowedServerIds,
-                     String roleLabel, String displayName, long version, Instant issuedAt, Instant expiresAt) {
+                     String roleLabel, String displayName, long version, Instant issuedAt, Instant expiresAt,
+                     boolean member, String admissionYear, boolean administrator, Map<String,String> serverLabels, boolean telemetryEnabled, UUID telemetryEpoch) {
+    public Policy(UUID uuid, String status, Set<String> ids, String role, String name, long version, Instant issued, Instant expires, boolean member, String year, boolean admin, Map<String,String> labels) {
+        this(uuid,status,ids,role,name,version,issued,expires,member,year,admin,labels,false,null);
+    }
+    public Policy(UUID uuid, String status, Set<String> ids, String role, String name, long version, Instant issued, Instant expires) {
+        this(uuid,status,ids,role,name,version,issued,expires,false,null,false,Map.of());
+    }
     private static final Set<String> STATUSES = Set.of("unlinked", "pending", "active", "suspended", "revoked", "stale");
     public static Policy parse(String body, UUID expected, Instant now) {
         JsonObject o = JsonParser.parseString(body).getAsJsonObject();
@@ -32,13 +39,32 @@ public record Policy(UUID minecraftUuid, String status, Set<String> allowedServe
         JsonObject display = o.getAsJsonObject("display");
         String role = plain(display.get("roleLabel").getAsString(), 24);
         String name = plain(display.get("displayName").getAsString(), 40);
-        return new Policy(uuid, status, Set.copyOf(ids), role, name, version, issued, expiry);
+        boolean member = display.has("member") && display.get("member").getAsBoolean();
+        String year = display.has("admissionYear") && !display.get("admissionYear").isJsonNull() ? display.get("admissionYear").getAsString() : null;
+        if (year != null && !year.matches("[0-9]{2}")) throw new IllegalArgumentException("admissionYear");
+        boolean administrator = o.has("administrator") && o.get("administrator").getAsBoolean();
+        Map<String,String> labels = new HashMap<>();
+        if (o.has("allowedServers")) for (JsonElement item : o.getAsJsonArray("allowedServers")) {
+            JsonObject server = item.getAsJsonObject(); String id = server.get("id").getAsString();
+            String label = plain(server.get("label").getAsString(),80);
+            if (!ids.contains(id) || label.isBlank() || labels.put(id,label) != null) throw new IllegalArgumentException("server labels");
+        }
+        if (!status.equals("active") && (member || administrator || year != null)) throw new IllegalArgumentException("inactive identity");
+        JsonObject telemetry=o.has("telemetry") ? o.getAsJsonObject("telemetry") : null;
+        boolean telemetryEnabled=telemetry!=null && telemetry.get("enabled").getAsBoolean();
+        UUID epoch=telemetry!=null && !telemetry.get("epoch").isJsonNull() ? UUID.fromString(telemetry.get("epoch").getAsString()) : null;
+        if(telemetryEnabled != (epoch!=null) || (telemetryEnabled && !status.equals("active"))) throw new IllegalArgumentException("telemetry");
+        // Older APIs did not advertise expanded game consent: do not expose their displayName as a real name.
+        if(telemetry==null) { name=""; member=false; year=null; }
+        return new Policy(uuid, status, Set.copyOf(ids), role, name, version, issued, expiry,member,year,administrator,Map.copyOf(labels),telemetryEnabled,epoch);
     }
     private static String plain(String value, int limit) {
         if (value.codePointCount(0,value.length()) > limit || value.codePoints().anyMatch(Character::isISOControl))
             throw new IllegalArgumentException("display");
         return value;
     }
+    public boolean active(Instant now) { return "active".equals(status) && expiresAt.isAfter(now) && !issuedAt.isAfter(now.plusSeconds(2)); }
+    public String label(String id) { return serverLabels.getOrDefault(id,id); }
     public boolean allows(String serverId, Instant now) {
         return "active".equals(status) && expiresAt.isAfter(now) && !issuedAt.isAfter(now.plusSeconds(2)) && allowedServerIds.contains(serverId);
     }

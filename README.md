@@ -85,3 +85,25 @@ UUID별 버전 기준은 로그아웃해도 프로세스 메모리에 남습니�
 - SSE 대신 DB outbox를 2초 간격으로 poll합니다. 약 5초 회수 목표의 실제 클라이언트 측정은 아직 남아 있습니다.
 - 플러그인은 방화벽·프록시 forwarding 설정을 대신하지 않습니다. Paper 직접 접속 차단과 현대식 forwarding은 운영 배치의 필수 조건입니다.
 - 서비스별 토큰 분리·회전은 운영 구성 단계의 후속 작업입니다. 현재 API와 공유된 서비스 토큰을 사용합니다.
+
+## 서버 이동 및 관리 명령
+
+| 명령 | 동작 |
+|---|---|
+| `/passport server [서버 ID 또는 표시명]`, `/서버 [서버명]` | 비어 있으면 허용 서버 목록. 지정 시 최신 중앙 정책 확인 후 이동 |
+| `/passport status` | 인증·허용 서버 수·누적 플레이 시간·사망 수와 상세 웹 링크 |
+| `/passport web` | 사용자 웹 열기 |
+| `/passport player <실명 또는 IGN 또는 UUID>` | 관리자: 접속 여부·현재 서버 조회, 오프라인 계정도 중앙 검색 |
+| `/passport adminweb` | 관리자 웹 열기 |
+| `/passport tp <실명 또는 IGN>` | 관리자: 접속 중인 대상의 서버로 이동. 좌표 teleport는 하지 않음 |
+| `/passport announce <내용>` | 관리자: 프록시에 접속한 전체 사용자에게 일반 텍스트 공지 |
+
+기본 `/server` 등록 및 기본 별칭을 해제하고 `server`·`velocity:server` 실행도 차단합니다. 중앙 `ServerPreConnectEvent` 검사는 다른 플러그인의 이동에도 적용되므로 별도 명령으로 접근 권한을 우회할 수 없습니다. 허용되지 않은 서버는 목록·자동완성에 노출하지 않습니다. 표시명이 중복되면 서버 ID로, 실명이 중복되면 IGN으로 지정합니다.
+
+관리 명령은 매번 새 중앙 정책의 `administrator=true`를 확인합니다. 로컬 `passport.admin`을 명시적으로 false로 설정하면 추가 차단할 수 있지만 로컬 true만으로 중앙 관리자 권한을 얻지는 못합니다. 콘솔은 조회·공지 등 관리 작업을 실행할 수 있습니다. 관리자도 이동 대상 서버의 접근 권한이 필요합니다. 웹 관리자 인증과 플러그인 동작은 별개로 유지하며 URL에 인증 토큰을 넣지 않습니다.
+
+공지에 MiniMessage/명령 구문을 해석하지 않고 300자 이내 일반 텍스트로 보냅니다. 로그인 UUID/IGN은 그대로이며 실명 검색은 Passport 명령 범위에만 적용됩니다. 모든 외부 플러그인 명령을 가로채지 않습니다.
+
+`PASSPORT_ADMIN_ORIGIN` 기본값은 `https://admin-overworld.flyjung.kr`이며 HTTPS origin을 설정합니다. 개인 상세 기록 링크는 `PASSPORT_WEB_ORIGIN`의 `/me/stats`로 열립니다. 일반 게임 서버 주소는 `overworld.flyjung.kr`입니다. 격리 QA 서버와 운영 서버의 포트·설정은 배포 환경에서 관리합니다.
+
+[Velocity 공식 Command API](https://docs.papermc.io/velocity/dev/command-api/)를 기준으로 구현했습니다. 로컬 테스트·CI는 Java 25/Paper 및 Velocity API 호환성만 확인하며, 실제 정품 계정의 접속·이름·PAPI·통계·서버 이동 검증은 배포 환경에서 별도 수행해야 합니다.
