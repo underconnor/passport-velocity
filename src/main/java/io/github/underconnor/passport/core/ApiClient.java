@@ -27,6 +27,9 @@ public final class ApiClient implements AutoCloseable {
         return request("GET", "v1/minecraft/events" + (after == null ? "" : "?after=" + after), null)
             .thenApply(PolicyEvents::parse);
     }
+    public CompletableFuture<Void> heartbeat(String source, List<ServerRegistration> servers) {
+        return request("POST", "v1/minecraft/servers/heartbeat", ServerRegistration.payload(source, servers)).thenApply(ignored -> null);
+    }
     public CompletableFuture<Policy> policy(UUID uuid) {
         return request("GET", "v1/minecraft/policies/" + uuid, null)
             .thenApply(body -> Policy.parse(body, uuid, Instant.now()));

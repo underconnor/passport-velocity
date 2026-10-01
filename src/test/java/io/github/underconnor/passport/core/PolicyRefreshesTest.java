@@ -40,4 +40,14 @@ class PolicyRefreshesTest {
         PolicyRefreshes refreshes=new PolicyRefreshes(id->{if(count.getAndIncrement()==0)throw new IllegalStateException("closed");return CompletableFuture.completedFuture(policy(id));},1);
         assertThrows(CompletionException.class,()->refreshes.fetch(uuid).join()); assertEquals(uuid,refreshes.fetch(uuid).join().minecraftUuid());
     }
+
+    @Test void freshAdmissionCannotReuseAnOlderAllowedLeaseWhenTheNewRequestFails() {
+        UUID uuid=UUID.randomUUID(); List<CompletableFuture<Policy>> requests=new ArrayList<>();
+        var refreshes=new PolicyRefreshes(id->{var f=new CompletableFuture<Policy>();requests.add(f);return f;});
+        var cachedRequest=refreshes.fetch(uuid); var admission=refreshes.fresh(uuid);
+        var now=Instant.now(); var active=new Policy(uuid,"active",Set.of("lobby"),"","",1,now,now.plusSeconds(60));
+        requests.getFirst().complete(active); assertTrue(cachedRequest.join().allows("lobby",now));assertFalse(admission.isDone());
+        requests.get(1).completeExceptionally(new IllegalStateException("unavailable"));
+        assertThrows(CompletionException.class,admission::join); assertEquals(2,requests.size());
+    }
 }

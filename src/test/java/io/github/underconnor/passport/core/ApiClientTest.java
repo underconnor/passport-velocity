@@ -86,4 +86,33 @@ class ApiClientTest {
         } finally { server.stop(0); }
     }
 
+
+    @Test void heartbeatPostsOnlyDiscoveryFieldsWithServiceAuthenticationAndIgnoresSuccessBody() throws Exception {
+        HttpServer server=HttpServer.create(new InetSocketAddress("127.0.0.1",0),0);
+        CompletableFuture<String> requestBody=new CompletableFuture<>(),authorization=new CompletableFuture<>(),method=new CompletableFuture<>();
+        server.createContext("/v1/minecraft/servers/heartbeat",exchange -> {
+            authorization.complete(exchange.getRequestHeaders().getFirst("Authorization")); method.complete(exchange.getRequestMethod());
+            requestBody.complete(new String(exchange.getRequestBody().readAllBytes(),StandardCharsets.UTF_8));
+            byte[] response="{\"received\":1,\"registered\":1}".getBytes(StandardCharsets.UTF_8);
+            exchange.sendResponseHeaders(200,response.length);exchange.getResponseBody().write(response);exchange.close();
+        });server.start();
+        try(ApiClient api=new ApiClient("http://127.0.0.1:"+server.getAddress().getPort(),token,true)) {
+            api.heartbeat("paper",java.util.List.of(new ServerRegistration("lobby","로비"))).get(3,TimeUnit.SECONDS);
+            assertEquals("POST",method.get());assertEquals("Bearer "+token,authorization.get());
+            var body=com.google.gson.JsonParser.parseString(requestBody.get()).getAsJsonObject();
+            assertEquals(java.util.Set.of("source","servers"),body.keySet());assertEquals("paper",body.get("source").getAsString());
+            var entry=body.getAsJsonArray("servers").get(0).getAsJsonObject();assertEquals(java.util.Set.of("id","label"),entry.keySet());
+            assertEquals("lobby",entry.get("id").getAsString());assertEquals("로비",entry.get("label").getAsString());
+        } finally {server.stop(0);}
+    }
+    @Test void heartbeatAuthorizationFailureAndRegistryConflictAreNotSuccess() throws Exception {
+        HttpServer server=HttpServer.create(new InetSocketAddress("127.0.0.1",0),0);
+        java.util.concurrent.atomic.AtomicInteger status=new java.util.concurrent.atomic.AtomicInteger(401);
+        server.createContext("/v1/minecraft/servers/heartbeat",exchange -> {exchange.sendResponseHeaders(status.get(),-1);exchange.close();});server.start();
+        try(ApiClient api=new ApiClient("http://127.0.0.1:"+server.getAddress().getPort(),token,true)) {
+            assertThrows(ExecutionException.class,()->api.heartbeat("velocity",java.util.List.of()).get(3,TimeUnit.SECONDS));
+            status.set(409);assertThrows(ExecutionException.class,()->api.heartbeat("velocity",java.util.List.of()).get(3,TimeUnit.SECONDS));
+        } finally {server.stop(0);}
+    }
+
 }

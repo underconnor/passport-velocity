@@ -29,10 +29,10 @@ public final class PassportVelocity {
     private ApiClient api;
     private PolicyRefreshes refreshes;
     private PolicyEventPoller eventPoller;
+    private ServerHeartbeat heartbeat;
     private volatile boolean ready;
     private String waiting, defaultServer;
     private URI webOrigin;
-    private Set<String> sensitive = Set.of();
     private static final Component DENIED = Component.text("Passport 인증 또는 서버 권한을 확인할 수 없습니다.", NamedTextColor.RED);
     private static final class Session {
         final Player player;
@@ -56,7 +56,6 @@ public final class PassportVelocity {
             if (proxy.getServer(waiting).isEmpty() || waiting.equals(defaultServer)) throw new IllegalArgumentException("A separate waiting server must exist");
             webOrigin = URI.create(ApiClient.env("PASSPORT_WEB_ORIGIN", "https://passport.example"));
             if (webOrigin.getHost() == null || webOrigin.getUserInfo() != null || !("https".equals(webOrigin.getScheme()) || ("http".equals(webOrigin.getScheme()) && Boolean.parseBoolean(ApiClient.env("PASSPORT_ALLOW_INSECURE_HTTP", "false"))))) throw new IllegalArgumentException("Invalid web origin");
-            sensitive = new HashSet<>(Arrays.asList(ApiClient.env("PASSPORT_SENSITIVE_SERVERS", "").split(",")));
             api = new ApiClient(ApiClient.env("PASSPORT_API_BASE_URL", "https://api.passport.example/"),
                 System.getenv("API_SERVICE_TOKEN"), Boolean.parseBoolean(ApiClient.env("PASSPORT_ALLOW_INSECURE_HTTP", "false")));
             refreshes = new PolicyRefreshes(uuid -> api.policy(uuid).thenApply(policy -> {
@@ -66,7 +65,16 @@ public final class PassportVelocity {
             eventPoller = new PolicyEventPoller(api::events,
                 () -> sessions.values().stream().filter(this::current).map(s -> s.player.getUniqueId()).collect(java.util.stream.Collectors.toSet()),
                 this::refreshFromEvent);
+            heartbeat = new ServerHeartbeat(() -> api.heartbeat("velocity", ServerRegistration.backends(
+                proxy.getAllServers().stream().map(server -> server.getServerInfo().getName()).toList(), waiting)), available -> {
+                if (ready) { if (available) logger.info("Passport server registration recovered");
+                    else logger.warn("Passport server registration unavailable; existing access checks remain active"); }
+            });
             ready = true;
+            heartbeat.poll().exceptionally(error -> null);
+            proxy.getScheduler().buildTask(this, () -> {
+                if (ready) heartbeat.poll().exceptionally(error -> null);
+            }).delay(Duration.ofSeconds(30)).repeat(Duration.ofSeconds(30)).schedule();
             proxy.getScheduler().buildTask(this, this::tick).repeat(Duration.ofSeconds(1)).schedule();
             proxy.getScheduler().buildTask(this, () -> {
                 if (ready) eventPoller.poll().exceptionally(error -> null);
@@ -99,13 +107,16 @@ public final class PassportVelocity {
         if (!ready || session == null || !current(session)) { event.setResult(ServerPreConnectEvent.ServerResult.denied()); return null; }
         String serverId = target.getServerInfo().getName();
         if (serverId.equals(waiting)) return null;
-        if (!sensitive.contains(serverId) && policies.allows(event.getPlayer().getUniqueId(), serverId, Instant.now())) return null;
         event.setResult(ServerPreConnectEvent.ServerResult.denied());
-        return EventTask.resumeWhenComplete(refresh(session).handle((valid, error) -> {
-            if (error == null && Boolean.TRUE.equals(valid) && current(session)
+        return EventTask.resumeWhenComplete(refreshes.fresh(session.player.getUniqueId()).handle((policy, error) -> {
+            if (error == null && current(session)
                 && policies.allows(session.player.getUniqueId(), serverId, Instant.now()))
                 event.setResult(ServerPreConnectEvent.ServerResult.allowed(target));
-            else if (current(session)) session.player.sendMessage(DENIED);
+            else if (current(session) && session.player.getCurrentServer().isEmpty()) {
+                // An initial pre-connect denial need not fire a backend kick event.
+                proxy.getServer(waiting).ifPresent(server -> event.setResult(ServerPreConnectEvent.ServerResult.allowed(server)));
+            } else if (current(session) && !(serverId.equals(defaultServer) && session.routing.inProgress()))
+                session.player.sendMessage(DENIED);
             return null;
         }));
     }

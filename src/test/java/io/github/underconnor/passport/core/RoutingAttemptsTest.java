@@ -7,8 +7,8 @@ import static org.junit.jupiter.api.Assertions.*;
 class RoutingAttemptsTest {
     private static long seconds(int n) { return TimeUnit.SECONDS.toNanos(n); }
     @Test void defaultConnectionIsSingleFlightAndFailuresDelayRetry() {
-        RoutingAttempts r=new RoutingAttempts(); long first=r.begin(0); assertNotEquals(0,first); assertEquals(0,r.begin(0));
-        assertTrue(r.complete(first,false,0)); assertEquals(0,r.begin(seconds(1)));
+        RoutingAttempts r=new RoutingAttempts(); assertFalse(r.inProgress()); long first=r.begin(0); assertTrue(r.inProgress()); assertNotEquals(0,first); assertEquals(0,r.begin(0));
+        assertTrue(r.complete(first,false,0)); assertFalse(r.inProgress()); assertEquals(0,r.begin(seconds(1)));
         long next=r.begin(seconds(2)); assertNotEquals(0,next);
         assertFalse(r.complete(next,false,seconds(2))); assertEquals(0,r.begin(seconds(5))); assertNotEquals(0,r.begin(seconds(6)));
     }

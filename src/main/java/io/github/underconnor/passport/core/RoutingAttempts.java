@@ -8,6 +8,7 @@ public final class RoutingAttempts {
     private long sequence, active, retryAfter;
     private int failures;
     private boolean notified;
+    public synchronized boolean inProgress() { return active != 0; }
     public synchronized long begin(long now) {
         if (active!=0 || now<retryAfter || failures>=MAX_FAILURES) return 0;
         active=++sequence;
