@@ -49,7 +49,7 @@ public record Policy(UUID minecraftUuid, String status, Set<String> allowedServe
             String label = plain(server.get("label").getAsString(),80);
             if (!ids.contains(id) || label.isBlank() || labels.put(id,label) != null) throw new IllegalArgumentException("server labels");
         }
-        if (!status.equals("active") && (member || administrator || year != null)) throw new IllegalArgumentException("inactive identity");
+        if (!status.equals("active") && (member || year != null)) throw new IllegalArgumentException("inactive identity");
         JsonObject telemetry=o.has("telemetry") ? o.getAsJsonObject("telemetry") : null;
         boolean telemetryEnabled=telemetry!=null && telemetry.get("enabled").getAsBoolean();
         UUID epoch=telemetry!=null && !telemetry.get("epoch").isJsonNull() ? UUID.fromString(telemetry.get("epoch").getAsString()) : null;
@@ -63,7 +63,8 @@ public record Policy(UUID minecraftUuid, String status, Set<String> allowedServe
             throw new IllegalArgumentException("display");
         return value;
     }
-    public boolean active(Instant now) { return "active".equals(status) && expiresAt.isAfter(now) && !issuedAt.isAfter(now.plusSeconds(2)); }
+    public boolean valid(Instant now) { return expiresAt.isAfter(now) && !issuedAt.isAfter(now.plusSeconds(2)); }
+    public boolean active(Instant now) { return "active".equals(status) && valid(now); }
     public String label(String id) { return serverLabels.getOrDefault(id,id); }
     public boolean allows(String serverId, Instant now) {
         return "active".equals(status) && expiresAt.isAfter(now) && !issuedAt.isAfter(now.plusSeconds(2)) && allowedServerIds.contains(serverId);

@@ -304,7 +304,7 @@ public final class PassportVelocity {
         if(session==null || !current(session) || source.getPermissionValue("passport.admin")==Tristate.FALSE) { source.sendMessage(DENIED); return; }
         refreshes.fresh(player.getUniqueId()).whenComplete((policy,error) -> {
             if(!current(session)) return;
-            if(error!=null || !policy.active(Instant.now()) || !policy.administrator()) { source.sendMessage(Component.text("등록된 Passport 관리자만 사용할 수 있습니다.",NamedTextColor.RED)); return; }
+            if(error!=null || !policy.valid(Instant.now()) || !policy.administrator()) { source.sendMessage(Component.text("등록된 Passport 관리자만 사용할 수 있습니다.",NamedTextColor.RED)); return; }
             action.run();
         });
     }
@@ -440,7 +440,7 @@ public final class PassportVelocity {
             if(args.length>1 && args[0].equalsIgnoreCase("server")) return serverSuggestions(invocation.source(),String.join(" ",Arrays.copyOfRange(args,1,args.length)));
             if(args.length>1) return List.of();
             List<String> commands=new ArrayList<>(List.of("server","status","web","link","confirm"));
-            if(!(invocation.source() instanceof Player player) || policies.get(player.getUniqueId()).filter(policy -> policy.active(Instant.now()) && policy.administrator()).isPresent()) commands.addAll(List.of("player","adminweb","tp","announce"));
+            if(!(invocation.source() instanceof Player player) || policies.get(player.getUniqueId()).filter(policy -> policy.valid(Instant.now()) && policy.administrator()).isPresent()) commands.addAll(List.of("player","adminweb","tp","announce"));
             String prefix=args.length==0 ? "" : args[0]; return commands.stream().filter(command -> command.startsWith(prefix)).toList();
         }
     }

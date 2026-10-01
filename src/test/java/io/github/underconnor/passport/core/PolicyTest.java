@@ -84,4 +84,12 @@ class PolicyTest {
         assertThrows(IllegalArgumentException.class,() -> Policy.parse(body.replace("\"33333333-3333-4333-8333-333333333333\"","null"),uuid,now));
         assertThrows(IllegalArgumentException.class,() -> Policy.parse(body.replace("\"enabled\":true","\"enabled\":false"),uuid,now));
     }
+    @Test void administratorCapabilityDoesNotPreventGameAccessRevocation() {
+        String body=json("revoked",9,"2026-09-30T00:00:00Z","2026-09-30T00:01:00Z")
+            .replace("\"policyVersion\":9","\"administrator\":true,\"policyVersion\":9");
+        Policy policy=Policy.parse(body,uuid,now);
+        assertTrue(policy.administrator()); assertTrue(policy.valid(now));
+        assertFalse(policy.active(now)); assertFalse(policy.allows("lobby",now));
+        assertFalse(policy.valid(Instant.parse("2026-09-30T00:01:00Z")));
+    }
 }
