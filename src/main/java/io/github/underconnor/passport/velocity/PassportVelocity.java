@@ -333,7 +333,14 @@ public final class PassportVelocity {
                 }
                 var match=found.get(0).getAsJsonObject(); UUID id=UUID.fromString(match.get("minecraftUuid").getAsString());
                 Player online=proxy.getPlayer(id).orElse(null);
-                String status=online==null ? "오프라인" : "접속 중 · "+online.getCurrentServer().map(connection -> connection.getServerInfo().getName()).orElse("접속 중");
+                String status="오프라인";
+                if(online!=null) {
+                    String serverLabel=source instanceof Player viewer ? online.getCurrentServer()
+                        .flatMap(connection -> policies.get(viewer.getUniqueId()).flatMap(policy ->
+                            CommandSelection.visibleServerLabel(policy,connection.getServerInfo().getName(),Instant.now())))
+                        .orElse("") : "";
+                    status=serverLabel.isBlank() ? "접속 중" : "접속 중 · "+serverLabel;
+                }
                 source.sendMessage(Component.text(match.get("minecraftName").getAsString()+" · "+match.get("displayName").getAsString()+" · "+status));
             } catch(RuntimeException malformed) { source.sendMessage(Component.text("플레이어 응답을 확인할 수 없습니다.",NamedTextColor.YELLOW)); }
         });
@@ -365,11 +372,19 @@ public final class PassportVelocity {
             if(!current(session)) return;
             if(error!=null || !policy.active(Instant.now())) { session.player.sendMessage(DENIED); return; }
             if(query.isBlank()) {
-                List<String> labels=policy.allowedServerIds().stream().sorted().map(id -> policy.label(id)+" ("+id+")").toList();
-                session.player.sendMessage(Component.text(labels.isEmpty() ? "접속 가능한 서버가 없습니다." : "접속 가능한 서버: "+String.join(", ",labels))); return;
+                if(policy.allowedServerIds().isEmpty()) session.player.sendMessage(Component.text("접속 가능한 서버가 없습니다."));
+                else {
+                    session.player.sendMessage(Component.text("접속 가능한 서버"));
+                    policy.allowedServerIds().stream().sorted(Comparator.comparing(policy::label)).forEach(id -> {
+                        String command="/서버 "+policy.commandName(id);
+                        session.player.sendMessage(Component.text("· "+policy.label(id)+"  ").append(Component.text(command,NamedTextColor.GREEN)
+                            .clickEvent(ClickEvent.runCommand(command))));
+                    });
+                }
+                return;
             }
             List<String> ids=CommandSelection.servers(policy,query);
-            if(ids.size()!=1) { session.player.sendMessage(Component.text(ids.isEmpty() ? "접속 가능한 서버를 찾을 수 없습니다." : "같은 서버 이름이 여러 개입니다. 서버 ID로 지정하세요.")); return; }
+            if(ids.size()!=1) { session.player.sendMessage(Component.text(ids.isEmpty() ? "접속 가능한 서버를 찾을 수 없습니다." : "같은 서버 이름이 여러 개입니다. 서버 목록에서 선택하세요.")); return; }
             String id=ids.getFirst();
             if(session.player.getCurrentServer().map(connection -> connection.getServerInfo().getName().equals(id)).orElse(false)) {
                 session.player.sendMessage(Component.text("이미 접속 중인 서버입니다.")); return;
@@ -407,11 +422,7 @@ public final class PassportVelocity {
     }
     private List<String> serverSuggestions(CommandSource source,String prefix) {
         return source instanceof Player player ? policies.get(player.getUniqueId()).filter(policy -> policy.active(Instant.now()))
-            .map(policy -> {
-                List<String> names=new ArrayList<>(policy.allowedServerIds());
-                for(String id:policy.allowedServerIds()) if(!policy.label(id).contains(" ")) names.add(policy.label(id));
-                return CommandSelection.suggestions(names,prefix);
-            }).orElse(List.of()) : List.of();
+            .map(policy -> CommandSelection.serverSuggestions(policy,prefix)).orElse(List.of()) : List.of();
     }
     @Subscribe(order=PostOrder.FIRST) public void teleportReply(PluginMessageEvent event) {
         if(!TELEPORT_CHANNEL.equals(event.getIdentifier())) return;

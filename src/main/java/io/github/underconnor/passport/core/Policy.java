@@ -2,12 +2,16 @@ package io.github.underconnor.passport.core;
 
 import com.google.gson.*;
 import java.time.*;
+import java.text.Normalizer;
 import java.util.*;
 
 public record Policy(UUID minecraftUuid, String status, Set<String> allowedServerIds,
                      String roleLabel, String displayName, long version, Instant issuedAt, Instant expiresAt,
                      boolean member, String admissionYear, boolean administrator, Map<String,String> serverLabels, boolean telemetryEnabled, UUID telemetryEpoch,
-                     Set<String> telemetryServerIds, boolean presenceEnabled) {
+                     Set<String> telemetryServerIds, boolean presenceEnabled, Map<String,String> serverCommandNames) {
+    public Policy(UUID uuid, String status, Set<String> ids, String role, String name, long version, Instant issued, Instant expires, boolean member, String year, boolean admin, Map<String,String> labels, boolean telemetry, UUID epoch, Set<String> telemetryIds, boolean presence) {
+        this(uuid,status,ids,role,name,version,issued,expires,member,year,admin,labels,telemetry,epoch,telemetryIds,presence,Map.of());
+    }
     public Policy(UUID uuid, String status, Set<String> ids, String role, String name, long version, Instant issued, Instant expires, boolean member, String year, boolean admin, Map<String,String> labels) {
         this(uuid,status,ids,role,name,version,issued,expires,member,year,admin,labels,false,null,Set.of(),false);
     }
@@ -44,12 +48,23 @@ public record Policy(UUID minecraftUuid, String status, Set<String> allowedServe
         String year = display.has("admissionYear") && !display.get("admissionYear").isJsonNull() ? display.get("admissionYear").getAsString() : null;
         if (year != null && !year.matches("[0-9]{2}")) throw new IllegalArgumentException("admissionYear");
         boolean administrator = o.has("administrator") && o.get("administrator").getAsBoolean();
-        Map<String,String> labels = new HashMap<>();
+        Map<String,String> labels = new HashMap<>(), commandNames = new HashMap<>();
+        Set<String> uniqueCommands = new HashSet<>();
         if (o.has("allowedServers")) for (JsonElement item : o.getAsJsonArray("allowedServers")) {
             JsonObject server = item.getAsJsonObject(); String id = server.get("id").getAsString();
             String label = plain(server.get("label").getAsString(),80);
             if (!ids.contains(id) || label.isBlank() || labels.put(id,label) != null) throw new IllegalArgumentException("server labels");
+            if (server.has("commandName")) {
+                JsonElement value=server.get("commandName");
+                if (!value.isJsonPrimitive() || !value.getAsJsonPrimitive().isString()) throw new IllegalArgumentException("server command");
+                String command=value.getAsString();
+                if (!command.matches("[a-z0-9가-힣_-]{1,64}") || !command.equals(normalizeCommand(command))
+                        || !uniqueCommands.add(command) || (ids.contains(command) && !command.equals(id))) throw new IllegalArgumentException("server command");
+                commandNames.put(id,command);
+            }
         }
+        // Only wholly legacy responses may fall back to IDs; a partial new response fails closed.
+        if (!commandNames.isEmpty() && !commandNames.keySet().equals(ids)) throw new IllegalArgumentException("server commands incomplete");
         if (!status.equals("active") && (member || year != null)) throw new IllegalArgumentException("inactive identity");
         JsonObject telemetry=o.has("telemetry") ? o.getAsJsonObject("telemetry") : null;
         boolean telemetryEnabled=telemetry!=null && telemetry.get("enabled").getAsBoolean();
@@ -71,7 +86,7 @@ public record Policy(UUID minecraftUuid, String status, Set<String> allowedServe
         }
         // Older APIs did not advertise expanded game consent: do not expose their displayName as a real name.
         if(telemetry==null) { name=""; member=false; year=null; }
-        return new Policy(uuid, status, Set.copyOf(ids), role, name, version, issued, expiry,member,year,administrator,Map.copyOf(labels),telemetryEnabled,epoch,Set.copyOf(telemetryServers),presenceEnabled);
+        return new Policy(uuid, status, Set.copyOf(ids), role, name, version, issued, expiry,member,year,administrator,Map.copyOf(labels),telemetryEnabled,epoch,Set.copyOf(telemetryServers),presenceEnabled,Map.copyOf(commandNames));
     }
     private static String plain(String value, int limit) {
         if (value.codePointCount(0,value.length()) > limit || value.codePoints().anyMatch(Character::isISOControl))
@@ -81,6 +96,9 @@ public record Policy(UUID minecraftUuid, String status, Set<String> allowedServe
     public boolean valid(Instant now) { return expiresAt.isAfter(now) && !issuedAt.isAfter(now.plusSeconds(2)); }
     public boolean active(Instant now) { return "active".equals(status) && valid(now); }
     public String label(String id) { return serverLabels.getOrDefault(id,id); }
+    public boolean hasServerCommandNames() { return !serverCommandNames.isEmpty(); }
+    public String commandName(String id) { return serverCommandNames.getOrDefault(id,id); }
+    public static String normalizeCommand(String value) { return Normalizer.normalize(value,Normalizer.Form.NFC).toLowerCase(Locale.ROOT); }
     public boolean collectsStatistics(String serverId,Instant now) {
         return telemetryEnabled && telemetryEpoch!=null && telemetryServerIds.contains(serverId) && allows(serverId,now);
     }
