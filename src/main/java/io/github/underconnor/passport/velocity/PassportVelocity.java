@@ -33,6 +33,7 @@ public final class PassportVelocity {
     private ApiClient api;
     private String teleportSecret;
     private final TeleportRequests teleports=new TeleportRequests();
+    private static final MinecraftChannelIdentifier DEPARTURE_CHANNEL=MinecraftChannelIdentifier.from(DepartureMessage.CHANNEL);
     private static final MinecraftChannelIdentifier TELEPORT_CHANNEL=MinecraftChannelIdentifier.from(TeleportMessage.CHANNEL);
     private PolicyRefreshes refreshes;
     private PolicyEventPoller eventPoller;
@@ -53,6 +54,7 @@ public final class PassportVelocity {
         final RoutingAttempts routing = new RoutingAttempts();
         final DiscordInvitation discordInvitation;
         final AdmissionQueue.Key queueKey;
+        volatile DepartureMessage departure;
         volatile LinkCompletionPoller completion;
         volatile String linkId;
         volatile Instant linkExpiry;
@@ -85,7 +87,7 @@ public final class PassportVelocity {
             api = new ApiClient(ApiClient.env("PASSPORT_API_BASE_URL", "https://api.passport.example/"),
                 System.getenv("API_SERVICE_TOKEN"), Boolean.parseBoolean(ApiClient.env("PASSPORT_ALLOW_INSECURE_HTTP", "false")));
             teleportSecret=TeleportSecrets.resolve(System.getenv("PASSPORT_TELEPORT_SECRET"),System.getenv("API_SERVICE_TOKEN"));
-            proxy.getChannelRegistrar().register(TELEPORT_CHANNEL);
+            proxy.getChannelRegistrar().register(TELEPORT_CHANNEL,DEPARTURE_CHANNEL);
             refreshes = new PolicyRefreshes(uuid -> {
                 Session requestingSession = sessions.get(uuid);
                 return api.policy(uuid).thenApply(policy -> {
@@ -171,6 +173,12 @@ public final class PassportVelocity {
     @Subscribe public void connected(ServerConnectedEvent event) {
         Session session = sessions.get(event.getPlayer().getUniqueId());
         if(session==null || session.player!=event.getPlayer() || !current(session)) return;
+        DepartureMessage previous=session.departure;
+        String destination=event.getServer().getServerInfo().getName();
+        session.departure=DepartureMessage.begin(event.getPlayer().getUniqueId(),destination,Instant.now());
+        if(previous!=null && !previous.serverId().equals(destination)) event.getPreviousServer()
+            .filter(server -> server.getServerInfo().getName().equals(previous.serverId()))
+            .ifPresent(server -> server.sendPluginMessage(DEPARTURE_CHANNEL,previous.transferred(Instant.now()).encode(teleportSecret)));
         if (session != null && event.getServer().getServerInfo().getName().equals(defaultServer)) session.routing.succeeded();
         if (session != null && event.getServer().getServerInfo().getName().equals(waiting)) {
             refresh(session).whenComplete((valid,error) -> {
@@ -187,6 +195,10 @@ public final class PassportVelocity {
     @Subscribe public void postConnected(ServerPostConnectEvent event) {
         Session session = sessions.get(event.getPlayer().getUniqueId());
         if (session != null && session.player == event.getPlayer() && current(session)) {
+            DepartureMessage visit=session.departure;
+            if(visit!=null && visit.valid(Instant.now())) session.player.getCurrentServer()
+                .filter(server -> server.getServerInfo().getName().equals(visit.serverId()))
+                .ifPresent(server -> server.sendPluginMessage(DEPARTURE_CHANNEL,visit.encode(teleportSecret)));
             session.playReady = true;
             session.player.getCurrentServer().ifPresent(server -> admissions.arrived(session.queueKey,server.getServerInfo().getName()));
             if(event.getPreviousServer()==null) queueStatus(session,false);
@@ -221,7 +233,7 @@ public final class PassportVelocity {
             admissions.disconnected(session.queueKey); cancel(session);
         }
     }
-    @Subscribe public void shutdown(ProxyShutdownEvent event) { ready = false; teleports.close(); proxy.getChannelRegistrar().unregister(TELEPORT_CHANNEL); if (api != null) api.close(); }
+    @Subscribe public void shutdown(ProxyShutdownEvent event) { ready = false; teleports.close(); proxy.getChannelRegistrar().unregister(TELEPORT_CHANNEL,DEPARTURE_CHANNEL); if (api != null) api.close(); }
     private boolean current(Session session) { return ready && session.player.isActive() && sessions.get(session.player.getUniqueId()) == session; }
     private CompletableFuture<Boolean> refresh(Session session) {
         if (!current(session)) return CompletableFuture.completedFuture(false);
@@ -498,16 +510,18 @@ public final class PassportVelocity {
     private void help(CommandSource source) {
         List<String> available=availablePassportCommands(source);
         source.sendMessage(Component.text("Passport 명령어",NamedTextColor.WHITE));
-        for(String command:List.of("server","status","queue","web","link","player","tp","adminweb","announce")) {
+        for(String command:List.of("server","list","status","queue","web","link","player","tp","adminweb","announce")) {
             if(!available.contains(command)) continue;
             String usage=switch(command) {
                 case "server" -> "/서버 [서버명]";
+                case "list" -> "/passport list [페이지]";
                 case "player","tp" -> "/passport "+command+" <실명|IGN>";
                 case "announce" -> "/passport announce <내용>";
                 default -> "/passport "+command;
             };
             String description=switch(command) {
                 case "server" -> "서버 목록·이동"; case "status" -> "내 인증·플레이 기록";
+                case "list" -> "네트워크 접속자·서버 위치";
                 case "queue" -> "대기 순서·취소"; case "web" -> "웹페이지 열기";
                 case "link" -> "계정 연결"; case "player" -> "플레이어 조회";
                 case "tp" -> "플레이어에게 이동"; case "adminweb" -> "관리자 웹";
@@ -520,6 +534,29 @@ public final class PassportVelocity {
                 .append(Component.text(" · "+description,NamedTextColor.GRAY)));
         }
         if(source instanceof Player) source.sendMessage(Component.text("현재 서버의 다른 명령어는 /help",NamedTextColor.GRAY));
+    }
+    private void listPlayers(CommandSource source,String[] arguments,Policy viewer) {
+        int requested;
+        try { requested=NetworkRoster.pageNumber(arguments); }
+        catch(IllegalArgumentException invalid) { source.sendMessage(Component.text("/passport list [페이지]",NamedTextColor.YELLOW)); return; }
+        Instant now=Instant.now();
+        boolean full=!(source instanceof Player) || canSuggestAdmin(source);
+        var entries=proxy.getAllPlayers().stream().filter(Player::isActive).map(player -> {
+            String server=player.getCurrentServer().map(connection -> connection.getServerInfo().getName()).orElse(null);
+            String label=server==null ? null : policies.get(player.getUniqueId()).filter(policy -> policy.active(now))
+                .map(policy -> policy.serverLabels().get(server)).orElse(null);
+            return new NetworkRoster.Entry(player.getUsername(),server,label);
+        }).toList();
+        NetworkRoster.Page page;
+        try { page=NetworkRoster.page(entries,requested); }
+        catch(IllegalArgumentException invalid) { source.sendMessage(Component.text("해당 페이지가 없습니다. /passport list",NamedTextColor.YELLOW)); return; }
+        source.sendMessage(Component.text("네트워크 접속 중 · "+page.total()+"명",NamedTextColor.WHITE)
+            .append(Component.text("  "+page.number()+"/"+page.pages()+" 페이지",NamedTextColor.GRAY)));
+        for(var entry:page.entries()) source.sendMessage(Component.text("· "+entry.ign(),NamedTextColor.WHITE)
+            .append(Component.text(" · "+NetworkRoster.location(entry,viewer,full,waiting,now),NamedTextColor.GRAY)));
+        if(page.entries().isEmpty()) source.sendMessage(Component.text("접속 중인 플레이어가 없습니다.",NamedTextColor.GRAY));
+        if(page.number()<page.pages()) source.sendMessage(Component.text("[다음 페이지]",NamedTextColor.GREEN)
+            .clickEvent(ClickEvent.runCommand("/passport list "+(page.number()+1))));
     }
     private void web(CommandSource source,boolean admin) {
         source.sendMessage(Component.text(admin ? "[Passport 관리자 웹]" : "[Passport 웹 열기]",NamedTextColor.AQUA)
@@ -647,6 +684,9 @@ public final class PassportVelocity {
         return source instanceof Player player ? policies.get(player.getUniqueId()).filter(policy -> policy.active(Instant.now()))
             .map(policy -> CommandSelection.serverSuggestions(policy,prefix)).orElse(List.of()) : List.of();
     }
+    @Subscribe(order=PostOrder.FIRST) public void departureMessage(PluginMessageEvent event) {
+        if(DEPARTURE_CHANNEL.equals(event.getIdentifier())) event.setResult(PluginMessageEvent.ForwardResult.handled());
+    }
     @Subscribe(order=PostOrder.FIRST) public void teleportReply(PluginMessageEvent event) {
         if(!TELEPORT_CHANNEL.equals(event.getIdentifier())) return;
         event.setResult(PluginMessageEvent.ForwardResult.handled());
@@ -694,6 +734,7 @@ public final class PassportVelocity {
             String[] args=invocation.arguments();
             String command=args.length==0 ? "link" : args[0].toLowerCase(Locale.ROOT);
             if(command.equals("help")) { help(invocation.source()); return; }
+            if(command.equals("list") && !(invocation.source() instanceof Player)) { listPlayers(invocation.source(),args,null); return; }
             if(Set.of("player","adminweb","tp","announce").contains(command)) {
                 adminAction(invocation.source(),() -> {
                     CommandSource source=invocation.source(); String value=String.join(" ",Arrays.copyOfRange(args,1,args.length));
@@ -718,6 +759,11 @@ public final class PassportVelocity {
             switch(sub) {
                 case "link" -> createLink(session);
                 case "web" -> web(player,false);
+                case "list" -> refreshes.fresh(player.getUniqueId()).whenComplete((policy,error) -> {
+                    if(!current(session)) return;
+                    if(error!=null || !policy.active(Instant.now())) { player.sendMessage(DENIED); return; }
+                    listPlayers(player,args,policy);
+                });
                 case "server" -> transfer(session,String.join(" ",Arrays.copyOfRange(args,1,args.length)));
                 case "queue" -> {
                     if(args.length==1) queueStatus(session,true);

@@ -21,7 +21,7 @@ class CommandPresentationTest {
     }
     @Test void ordinaryUsersSeeOnlyUsablePassportCommands() {
         List<String> commands=CommandPresentation.passportCommands(policy(false,"active",Set.of("lobby")),uuid,true,false,false,now);
-        assertTrue(commands.containsAll(List.of("help","server","status","web","queue","link")));
+        assertTrue(commands.containsAll(List.of("help","server","list","status","web","queue","link")));
         assertTrue(Collections.disjoint(commands,List.of("tp","announce","player","adminweb")));
     }
     @Test void unknownOrRevokedServerScopesDoNotAppearAsUsableServerTransfers() {
@@ -43,7 +43,7 @@ class CommandPresentationTest {
         assertTrue(commands.containsAll(List.of("player","adminweb","announce"))); assertFalse(commands.contains("tp"));
     }
     @Test void consoleHelpDoesNotAdvertisePlayerOnlyOperations() {
-        assertEquals(List.of("help","player","adminweb","announce"),CommandPresentation.passportCommands(null,null,false,false,true,now));
+        assertEquals(List.of("help","list","player","adminweb","announce"),CommandPresentation.passportCommands(null,null,false,false,true,now));
         assertTrue(CommandPresentation.passportCommands(null,uuid,false,false,false,now).isEmpty());
     }
 }

@@ -128,9 +128,11 @@ class AdmissionEventsTest {
         UUID uuid; Player player; boolean active=true; String server; Tristate permission=Tristate.UNDEFINED;
         int connectRequests; CompletableFuture<ConnectionRequestBuilder.Result> connection=new CompletableFuture<>();
         List<Component> messages=new ArrayList<>();
+        List<byte[]> packets=new ArrayList<>();
     }
     final class Fixture {
         final Map<String,RegisteredServer> servers=new HashMap<>();
+        final Map<String,List<byte[]>> packets=new HashMap<>();
         final List<Person> people=new ArrayList<>();
         final Map<UUID,Policy> responses=new HashMap<>();
         final PassportVelocity plugin;
@@ -140,9 +142,11 @@ class AdmissionEventsTest {
         long policyVersion;
         Fixture() throws Exception {
             for(String name:List.of("lobby","build","limbo")) {
+                packets.put(name,new ArrayList<>());
                 ServerInfo info=new ServerInfo(name,new InetSocketAddress("127.0.0.1",25565));
                 servers.put(name,stub(RegisteredServer.class,(method,args) -> switch(method.getName()) {
                     case "getServerInfo" -> info;
+                    case "sendPluginMessage" -> { packets.get(name).add((byte[])args[1]); yield true; }
                     case "getPlayersConnected" -> people.stream().filter(p -> name.equals(p.server)).map(p -> p.player).toList();
                     default -> null;
                 }));
@@ -150,10 +154,11 @@ class AdmissionEventsTest {
             ProxyServer proxy=stub(ProxyServer.class,(method,args) -> switch(method.getName()) {
                 case "getServer" -> Optional.ofNullable(servers.get(args[0]));
                 case "getAllServers" -> servers.values();
+                case "getAllPlayers" -> people.stream().map(person -> person.player).toList();
                 default -> null;
             });
             plugin=new PassportVelocity(proxy,stub(Logger.class,(method,args) -> null));
-            set(plugin,"ready",true); set(plugin,"waiting","limbo"); set(plugin,"defaultServer","lobby");
+            set(plugin,"teleportSecret","secret-test-key-never-used-for-production"); set(plugin,"ready",true); set(plugin,"waiting","limbo"); set(plugin,"defaultServer","lobby");
             queue=new AdmissionQueue(Map.of("lobby",1,"build",1,"limbo",1),server -> {
                 Set<AdmissionQueue.Key> keys=new HashSet<>();
                 for(Person person:people) if(server.equals(person.server)) try { keys.add(key(person)); } catch(Exception error) { throw new RuntimeException(error); }
@@ -176,6 +181,7 @@ class AdmissionEventsTest {
                 case "disconnect" -> { person.active=false; yield null; }
                 case "sendMessage","sendActionBar" -> { if(args[args.length-1] instanceof Component text) person.messages.add(text); yield null; }
                 case "getCurrentServer" -> person.server==null ? Optional.empty() : Optional.of(stub(ServerConnection.class,(connection,parameters) -> switch(connection.getName()) {
+                    case "sendPluginMessage" -> { person.packets.add((byte[])parameters[1]); yield true; }
                     case "getPlayer" -> person.player;
                     case "getServer" -> servers.get(person.server);
                     case "getServerInfo" -> servers.get(person.server).getServerInfo();

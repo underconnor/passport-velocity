@@ -26,9 +26,10 @@ public final class CommandPresentation {
             && policy.valid(now) && policy.administrator();
     }
     public static List<String> passportCommands(Policy policy,UUID uuid,boolean currentSession,boolean locallyDenied,boolean console,Instant now) {
-        if(console) return List.of("help","player","adminweb","announce");
+        if(console) return List.of("help","list","player","adminweb","announce");
         if(!currentSession) return List.of();
         List<String> commands=new ArrayList<>(List.of("help","status","web","link","queue"));
+        if(policy!=null && policy.minecraftUuid().equals(uuid) && policy.active(now)) commands.add("list");
         boolean servers=policy!=null && policy.minecraftUuid().equals(uuid) && policy.active(now) && !policy.allowedServerIds().isEmpty();
         if(servers) commands.add("server");
         if(administrator(policy,uuid,currentSession,locallyDenied,now)) {
