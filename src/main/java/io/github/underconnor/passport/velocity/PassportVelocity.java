@@ -474,10 +474,52 @@ public final class PassportVelocity {
             refresh(session).thenAccept(valid -> { if (valid && current(session)) moveDefault(session); }).exceptionally(error -> null);
     }
     @Subscribe(order=PostOrder.LAST) public void blockBuiltin(CommandExecuteEvent event) {
-        if(event.getCommandSource() instanceof Player && CommandSelection.blockedBuiltin(event.getCommand())) {
+        if(!(event.getCommandSource() instanceof Player player)) return;
+        if(CommandSelection.blockedBuiltin(event.getCommand())) {
             event.setResult(CommandExecuteEvent.CommandResult.denied());
             event.getCommandSource().sendMessage(Component.text("/서버 <서버명>",NamedTextColor.YELLOW));
+        } else if(!canInspect(player) && CommandPresentation.informationCommand(event.getCommand())) {
+            event.setResult(CommandExecuteEvent.CommandResult.denied());
+            player.sendMessage(Component.text("사용 가능한 명령어는 /help 또는 /passport help에서 확인하세요.",NamedTextColor.GRAY));
         }
+    }
+    private boolean canInspect(CommandSource source) { return source.getPermissionValue(CommandPresentation.INSPECT_PERMISSION)==Tristate.TRUE; }
+    @Subscribe(order=PostOrder.LAST) public void availableCommands(PlayerAvailableCommandsEvent event) {
+        var manager=proxy.getCommandManager();
+        CommandTreeFilter.filter(event.getRootNode(),event.getPlayer(),canInspect(event.getPlayer()),
+            manager::hasCommand,name -> manager.hasCommand(name,event.getPlayer()));
+    }
+    private List<String> availablePassportCommands(CommandSource source) {
+        if(!(source instanceof Player player)) return CommandPresentation.passportCommands(null,null,false,false,true,Instant.now());
+        Session session=sessions.get(player.getUniqueId());
+        return CommandPresentation.passportCommands(policies.get(player.getUniqueId()).orElse(null),player.getUniqueId(),
+            session!=null && session.player==player && current(session),source.getPermissionValue("passport.admin")==Tristate.FALSE,false,Instant.now());
+    }
+    private void help(CommandSource source) {
+        List<String> available=availablePassportCommands(source);
+        source.sendMessage(Component.text("Passport 명령어",NamedTextColor.WHITE));
+        for(String command:List.of("server","status","queue","web","link","player","tp","adminweb","announce")) {
+            if(!available.contains(command)) continue;
+            String usage=switch(command) {
+                case "server" -> "/서버 [서버명]";
+                case "player","tp" -> "/passport "+command+" <실명|IGN>";
+                case "announce" -> "/passport announce <내용>";
+                default -> "/passport "+command;
+            };
+            String description=switch(command) {
+                case "server" -> "서버 목록·이동"; case "status" -> "내 인증·플레이 기록";
+                case "queue" -> "대기 순서·취소"; case "web" -> "웹페이지 열기";
+                case "link" -> "계정 연결"; case "player" -> "플레이어 조회";
+                case "tp" -> "플레이어에게 이동"; case "adminweb" -> "관리자 웹";
+                default -> "전체 공지";
+            };
+            String executable=command.equals("server") ? "/서버" : "/passport "+command;
+            ClickEvent click=Set.of("player","tp","announce").contains(command)
+                ? ClickEvent.suggestCommand(executable+" ") : ClickEvent.runCommand(executable);
+            source.sendMessage(Component.text(usage,NamedTextColor.GREEN).clickEvent(click)
+                .append(Component.text(" · "+description,NamedTextColor.GRAY)));
+        }
+        if(source instanceof Player) source.sendMessage(Component.text("현재 서버의 다른 명령어는 /help",NamedTextColor.GRAY));
     }
     private void web(CommandSource source,boolean admin) {
         source.sendMessage(Component.text(admin ? "[Passport 관리자 웹]" : "[Passport 웹 열기]",NamedTextColor.AQUA)
@@ -589,9 +631,7 @@ public final class PassportVelocity {
         @Override public List<String> suggest(Invocation invocation) { return serverSuggestions(invocation.source(),String.join(" ",invocation.arguments())); }
     }
     private boolean canSuggestAdmin(CommandSource source) {
-        return !(source instanceof Player player) || source.getPermissionValue("passport.admin")!=Tristate.FALSE
-            && sessions.containsKey(player.getUniqueId()) && policies.get(player.getUniqueId())
-                .filter(policy -> policy.active(Instant.now()) && policy.administrator()).isPresent();
+        return availablePassportCommands(source).contains("player");
     }
     private List<String> playerSuggestions(CommandSource source,String prefix) {
         if(!canSuggestAdmin(source)) return List.of();
@@ -653,6 +693,7 @@ public final class PassportVelocity {
         @Override public void execute(Invocation invocation) {
             String[] args=invocation.arguments();
             String command=args.length==0 ? "link" : args[0].toLowerCase(Locale.ROOT);
+            if(command.equals("help")) { help(invocation.source()); return; }
             if(Set.of("player","adminweb","tp","announce").contains(command)) {
                 adminAction(invocation.source(),() -> {
                     CommandSource source=invocation.source(); String value=String.join(" ",Arrays.copyOfRange(args,1,args.length));
@@ -692,18 +733,18 @@ public final class PassportVelocity {
                     session.routing.retryManually();
                     moveDefault(session);
                 });
-                default -> player.sendMessage(Component.text("/passport [server|queue|status|web]"));
+                default -> help(player);
             }
         }
         @Override public List<String> suggest(Invocation invocation) {
             String[] args=invocation.arguments();
+            List<String> commands=availablePassportCommands(invocation.source());
+            if(args.length>1 && !commands.contains(args[0].toLowerCase(Locale.ROOT))) return List.of();
             if(args.length>1 && args[0].equalsIgnoreCase("server")) return serverSuggestions(invocation.source(),String.join(" ",Arrays.copyOfRange(args,1,args.length)));
             if(args.length==2 && Set.of("player","tp").contains(args[0].toLowerCase(Locale.ROOT)))
                 return playerSuggestions(invocation.source(),args[1]);
             if(args.length==2 && args[0].equalsIgnoreCase("queue")) return CommandSelection.suggestions(List.of("leave"),args[1]);
             if(args.length>1) return List.of();
-            List<String> commands=new ArrayList<>(List.of("server","queue","status","web","link"));
-            if(canSuggestAdmin(invocation.source())) commands.addAll(List.of("player","adminweb","tp","announce"));
             String prefix=args.length==0 ? "" : args[0].toLowerCase(Locale.ROOT); return commands.stream().filter(command -> command.startsWith(prefix)).toList();
         }
     }

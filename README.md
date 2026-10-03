@@ -97,6 +97,7 @@ UUID별 버전 기준은 로그아웃해도 프로세스 메모리에 남습니�
 | `/passport status` | 인증·허용 서버 수·누적 플레이 시간·사망 수와 상세 웹 링크 |
 | `/passport queue [leave]` | 현재 대기 서버·순서·취소 버튼 표시. `leave`는 대기 취소 |
 | `/passport web` | 사용자 웹 열기 |
+| `/passport help` | 현재 사용할 수 있는 Passport 명령을 클릭 가능한 짧은 안내로 표시 |
 | `/passport player <실명 또는 IGN 또는 UUID>` | 관리자: 접속 여부·현재 서버 조회, 오프라인 계정도 중앙 검색 |
 | `/passport adminweb` | 관리자 웹 열기 |
 | `/passport tp <실명 또는 IGN>` | 관리자: 같은 서버는 대상 위치로, 다른 서버는 서버 이동 후 대상 위치로 이동 |
@@ -109,6 +110,8 @@ UUID별 버전 기준은 로그아웃해도 프로세스 메모리에 남습니�
 `/passport player`의 현재 서버는 조회자에게 허용된 정책의 표시명으로 보여줍니다. 표시명이나 접근 권한을 확인할 수 없으면 서버 ID를 노출하지 않고 `접속 중`으로 표시합니다.
 
 관리 명령은 매번 새 중앙 정책의 `administrator=true`를 확인합니다. 로컬 `passport.admin`을 명시적으로 false로 설정하면 추가 차단할 수 있지만 로컬 true만으로 중앙 관리자 권한을 얻지는 못합니다. 콘솔은 조회·공지 등 관리 작업을 실행할 수 있습니다. 관리자도 이동 대상 서버의 접근 권한이 필요합니다. 웹 관리자 인증과 플러그인 동작은 별개로 유지하며 URL에 인증 토큰을 넣지 않습니다.
+
+`/passport help`와 자동완성은 같은 현재 세션·중앙 정책을 사용합니다. 일반 `/help`, `/?`, `/도움말`은 각 Paper 서버의 권한별 안내로 전달합니다. 프록시 최종 명령 트리에서는 프록시 명령의 실제 권한을 검사하고, Paper가 이미 권한을 적용한 일반 게임 명령은 유지합니다. `passport.commands.inspect`를 명시적으로 받은 사용자만 plugins/pl/version/ver/about 및 namespaced 정보·원본 도움말을 볼 수 있습니다. 이 권한은 정보 노출 차단만 해제하며 원래 명령의 실행 권한이나 Passport 관리자 권한을 부여하지 않습니다. 기본 `/server` 차단도 유지합니다. 오래된 NoHelp Skript를 설치하지 않고 이 기능을 Passport와 Paper 권한 설정으로 제공합니다. [Velocity 명령 API](https://docs.papermc.io/velocity/dev/command-api/)에서 `SimpleCommand.hasPermission=false`는 backend 전달을 뜻하므로, Passport 관리 명령은 계속 자체 실행 경계에서 거절합니다.
 
 공지에 MiniMessage/명령 구문을 해석하지 않고 300자 이내 일반 텍스트로 보냅니다. 로그인 UUID/IGN은 그대로이며 실명 검색은 Passport 명령 범위에만 적용됩니다. 모든 외부 플러그인 명령을 가로채지 않습니다.
 
