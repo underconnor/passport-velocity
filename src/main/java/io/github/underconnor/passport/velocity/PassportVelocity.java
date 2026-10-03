@@ -496,10 +496,12 @@ public final class PassportVelocity {
         }
     }
     private boolean canInspect(CommandSource source) { return source.getPermissionValue(CommandPresentation.INSPECT_PERMISSION)==Tristate.TRUE; }
-    @Subscribe(order=PostOrder.LAST) public void availableCommands(PlayerAvailableCommandsEvent event) {
+    @Subscribe(order=PostOrder.LAST) public EventTask availableCommands(PlayerAvailableCommandsEvent event) {
         var manager=proxy.getCommandManager();
-        CommandTreeFilter.filter(event.getRootNode(),event.getPlayer(),canInspect(event.getPlayer()),
-            manager::hasCommand,name -> manager.hasCommand(name,event.getPlayer()));
+        var roots=event.getRootNode().getChildren().stream().map(node -> node.getName()).toList();
+        return EventTask.resumeWhenComplete(LuckPermsCommandVisibility.hiddenRoots(roots,event.getPlayer(),manager,proxy.getPluginManager())
+            .thenAccept(hidden -> CommandTreeFilter.filter(event.getRootNode(),event.getPlayer(),canInspect(event.getPlayer()),
+                manager::hasCommand,name -> !hidden.contains(name) && manager.hasCommand(name,event.getPlayer()))));
     }
     private List<String> availablePassportCommands(CommandSource source) {
         if(!(source instanceof Player player)) return CommandPresentation.passportCommands(null,null,false,false,true,Instant.now());
