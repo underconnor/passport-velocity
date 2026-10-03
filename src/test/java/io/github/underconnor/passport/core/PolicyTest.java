@@ -123,4 +123,9 @@ class PolicyTest {
         assertNull(new Policy(uuid,"active",java.util.Set.of("lobby"),"","",1,now,now.plusSeconds(60),false,null,false,
             java.util.Map.of(),false,null,java.util.Set.of(),false,java.util.Map.of()).discordLinked());
     }
+    @Test void administratorCapabilityCannotBeCoercedFromStringsOrNumbers() {
+        String body=json("active",1,"2026-09-30T00:00:00Z","2026-09-30T00:01:00Z");
+        for(String invalid:new String[]{"null","\"true\"","\"false\"","1","0","{}","[]"})
+            assertThrows(IllegalArgumentException.class,() -> Policy.parse(body.replace("\"policyVersion\":1","\"administrator\":"+invalid+",\"policyVersion\":1"),uuid,now));
+    }
 }

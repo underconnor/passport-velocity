@@ -37,23 +37,32 @@ public final class PassportVelocity {
     private PolicyRefreshes refreshes;
     private PolicyEventPoller eventPoller;
     private ServerHeartbeat heartbeat;
+    private AdmissionQueue admissions;
     private volatile boolean ready;
     private String waiting, defaultServer;
     private URI webOrigin, adminOrigin;
     private static final Component DENIED = Component.text("Passport 인증 또는 서버 권한을 확인할 수 없습니다.", NamedTextColor.RED);
+    private static final Component WAITING_FULL = Component.text("현재 인증 대기실이 가득 찼습니다. 잠시 후 다시 접속해주세요.",NamedTextColor.YELLOW);
     private static final class Session {
         final Player player;
         final String gameSession = UUID.randomUUID().toString();
         final AtomicBoolean refreshing = new AtomicBoolean(), linking = new AtomicBoolean(), moving = new AtomicBoolean();
+        final AtomicBoolean queueChecking = new AtomicBoolean(), connecting = new AtomicBoolean();
         final AtomicLong lastCommand = new AtomicLong(), linkGeneration = new AtomicLong();
+        final QueueIntent queueIntent = new QueueIntent();
         final RoutingAttempts routing = new RoutingAttempts();
         final DiscordInvitation discordInvitation;
+        final AdmissionQueue.Key queueKey;
         volatile LinkCompletionPoller completion;
         volatile String linkId;
         volatile Instant linkExpiry;
         volatile long nextRefresh;
         volatile boolean playReady;
-        Session(Player player) { this.player = player; this.discordInvitation = new DiscordInvitation(player.getUniqueId()); }
+        volatile long nextQueueCheck, nextQueueBar;
+        Session(Player player) {
+            this.player = player; this.discordInvitation = new DiscordInvitation(player.getUniqueId());
+            this.queueKey = new AdmissionQueue.Key(player.getUniqueId(),gameSession);
+        }
     }
     @Inject public PassportVelocity(ProxyServer proxy, Logger logger) { this.proxy = proxy; this.logger = logger; }
     @Subscribe public void initialize(ProxyInitializeEvent event) {
@@ -67,6 +76,8 @@ public final class PassportVelocity {
             defaultServer = ApiClient.env("PASSPORT_DEFAULT_SERVER", "lobby");
             if (!proxy.getConfiguration().isOnlineMode()) throw new IllegalArgumentException("Velocity online-mode must be true");
             if (proxy.getServer(waiting).isEmpty() || waiting.equals(defaultServer)) throw new IllegalArgumentException("A separate waiting server must exist");
+            admissions=new AdmissionQueue(ServerCapacities.parse(System.getenv("PASSPORT_SERVER_CAPACITIES"),
+                proxy.getAllServers().stream().map(server -> server.getServerInfo().getName()).collect(java.util.stream.Collectors.toSet())),this::occupants);
             webOrigin = URI.create(ApiClient.env("PASSPORT_WEB_ORIGIN", "https://passport.example"));
             if (webOrigin.getHost() == null || webOrigin.getUserInfo() != null || !("https".equals(webOrigin.getScheme()) || ("http".equals(webOrigin.getScheme()) && Boolean.parseBoolean(ApiClient.env("PASSPORT_ALLOW_INSECURE_HTTP", "false"))))) throw new IllegalArgumentException("Invalid web origin");
             adminOrigin=URI.create(ApiClient.env("PASSPORT_ADMIN_ORIGIN","https://admin-overworld.flyjung.kr"));
@@ -107,11 +118,12 @@ public final class PassportVelocity {
         Player player = event.getPlayer();
         if (!ready || !player.isOnlineMode()) { player.disconnect(DENIED); return; }
         Session session = new Session(player);
-        sessions.put(player.getUniqueId(), session);
+        Session previous=sessions.put(player.getUniqueId(), session);
+        if(previous!=null) { admissions.disconnected(previous.queueKey); cancel(previous); }
     }
     @Subscribe(order=PostOrder.LAST) public EventTask initial(PlayerChooseInitialServerEvent event) {
         Session session = sessions.get(event.getPlayer().getUniqueId());
-        if (!ready || session == null || !current(session)) { event.getPlayer().disconnect(DENIED); return null; }
+        if (!ready || session == null || session.player!=event.getPlayer() || !current(session)) { event.getPlayer().disconnect(DENIED); return null; }
         RegisteredServer fallback = proxy.getServer(waiting).orElse(null);
         if (fallback == null) { event.getPlayer().disconnect(DENIED); return null; }
         event.setInitialServer(fallback);
@@ -125,24 +137,40 @@ public final class PassportVelocity {
         RegisteredServer target = event.getResult().getServer().orElse(null);
         if (target == null) return null;
         Session session = sessions.get(event.getPlayer().getUniqueId());
-        if (!ready || session == null || !current(session)) { event.setResult(ServerPreConnectEvent.ServerResult.denied()); return null; }
+        if (!ready || session == null || session.player!=event.getPlayer() || !current(session)) { event.setResult(ServerPreConnectEvent.ServerResult.denied()); return null; }
         String serverId = target.getServerInfo().getName();
-        if (serverId.equals(waiting)) return null;
         event.setResult(ServerPreConnectEvent.ServerResult.denied());
+        if (serverId.equals(waiting)) { allowWaiting(event,session); return null; }
+        long generation=session.queueIntent.generation();
         return EventTask.resumeWhenComplete(refreshes.fresh(session.player.getUniqueId()).handle((policy, error) -> {
-            if (error == null && current(session)
-                && policies.allows(session.player.getUniqueId(), serverId, Instant.now()))
-                event.setResult(ServerPreConnectEvent.ServerResult.allowed(target));
-            else if (current(session) && session.player.getCurrentServer().isEmpty()) {
-                // An initial pre-connect denial need not fire a backend kick event.
-                proxy.getServer(waiting).ifPresent(server -> event.setResult(ServerPreConnectEvent.ServerResult.allowed(server)));
-            } else if (current(session) && !(serverId.equals(defaultServer) && session.routing.inProgress()))
-                session.player.sendMessage(DENIED);
-            return null;
+            synchronized(session.queueIntent) {
+                if(!current(session) || generation!=session.queueIntent.generation()) return null;
+                AdmissionQueue.Decision decision=error==null ? admissions.request(session.queueKey,serverId,
+                    policies.get(session.player.getUniqueId()).orElse(null),adminDenied(session),Instant.now(),System.nanoTime()) : null;
+                if(decision!=null && decision.status()==AdmissionQueue.Status.ALLOWED && admissions.begin(decision.reservation())) event.setResult(ServerPreConnectEvent.ServerResult.allowed(target));
+                else {
+                    if(decision==null || decision.status()==AdmissionQueue.Status.DENIED) {
+                        admissions.reservation(session.queueKey).filter(r -> r.server().equals(serverId)).ifPresent(admissions::releaseUnstarted);
+                        cancelQueueFor(session,serverId);
+                    }
+                    if(decision!=null && decision.status()==AdmissionQueue.Status.QUEUED && decision.joined() && session.playReady) queueStatus(session,true);
+                    if(session.player.getCurrentServer().isEmpty() && admissions.reservation(session.queueKey).isEmpty()) allowWaiting(event,session);
+                    else if((decision==null || decision.status()==AdmissionQueue.Status.DENIED) && !(serverId.equals(defaultServer) && session.routing.inProgress())) session.player.sendMessage(DENIED);
+                }
+                return null;
+            }
         }));
+    }
+    private void allowWaiting(ServerPreConnectEvent event,Session session) {
+        if(!current(session)) return;
+        AdmissionQueue.Decision decision=admissions.waiting(session.queueKey,waiting,System.nanoTime());
+        if(decision.status()==AdmissionQueue.Status.ALLOWED && admissions.begin(decision.reservation())) proxy.getServer(waiting).ifPresent(server -> event.setResult(ServerPreConnectEvent.ServerResult.allowed(server)));
+        else if(decision.status()==AdmissionQueue.Status.BUSY) return;
+        else session.player.disconnect(WAITING_FULL);
     }
     @Subscribe public void connected(ServerConnectedEvent event) {
         Session session = sessions.get(event.getPlayer().getUniqueId());
+        if(session==null || session.player!=event.getPlayer() || !current(session)) return;
         if (session != null && event.getServer().getServerInfo().getName().equals(defaultServer)) session.routing.succeeded();
         if (session != null && event.getServer().getServerInfo().getName().equals(waiting)) {
             refresh(session).whenComplete((valid,error) -> {
@@ -160,6 +188,8 @@ public final class PassportVelocity {
         Session session = sessions.get(event.getPlayer().getUniqueId());
         if (session != null && session.player == event.getPlayer() && current(session)) {
             session.playReady = true;
+            session.player.getCurrentServer().ifPresent(server -> admissions.arrived(session.queueKey,server.getServerInfo().getName()));
+            if(event.getPreviousServer()==null) queueStatus(session,false);
             inviteToDiscord(session);
         }
     }
@@ -172,6 +202,9 @@ public final class PassportVelocity {
         }
     }
     @Subscribe(order=PostOrder.LAST) public void kicked(KickedFromServerEvent event) {
+        Session kickedSession=sessions.get(event.getPlayer().getUniqueId());
+        if(kickedSession==null || kickedSession.player!=event.getPlayer()) { event.setResult(KickedFromServerEvent.DisconnectPlayer.create(DENIED)); return; }
+        if(admissions!=null) admissions.failed(kickedSession.queueKey,event.getServer().getServerInfo().getName(),System.nanoTime());
         if (!ready || event.getServer().getServerInfo().getName().equals(waiting)) {
             event.setResult(KickedFromServerEvent.DisconnectPlayer.create(DENIED));
         } else {
@@ -184,7 +217,9 @@ public final class PassportVelocity {
     }
     @Subscribe public void disconnect(DisconnectEvent event) {
         Session session = sessions.get(event.getPlayer().getUniqueId());
-        if (session != null && session.player == event.getPlayer() && sessions.remove(event.getPlayer().getUniqueId(), session)) cancel(session);
+        if (session != null && session.player == event.getPlayer() && sessions.remove(event.getPlayer().getUniqueId(), session)) {
+            admissions.disconnected(session.queueKey); cancel(session);
+        }
     }
     @Subscribe public void shutdown(ProxyShutdownEvent event) { ready = false; teleports.close(); proxy.getChannelRegistrar().unregister(TELEPORT_CHANNEL); if (api != null) api.close(); }
     private boolean current(Session session) { return ready && session.player.isActive() && sessions.get(session.player.getUniqueId()) == session; }
@@ -202,10 +237,21 @@ public final class PassportVelocity {
     }
     private void tick() {
         long now = System.nanoTime();
+        for(AdmissionQueue.Reservation reservation:admissions.overdue(now)) {
+            Session session=sessions.get(reservation.key().uuid());
+            if(session!=null && session.queueKey.equals(reservation.key())) {
+                session.player.getCurrentServer().ifPresent(server -> admissions.arrived(session.queueKey,server.getServerInfo().getName()));
+                if(admissions.reservation(session.queueKey).filter(reservation::equals).isPresent())
+                    session.player.disconnect(Component.text("서버 연결 시간이 초과되었습니다. 다시 접속해주세요.",NamedTextColor.YELLOW));
+            }
+            else admissions.disconnected(reservation.key());
+        }
         for (Session session : sessions.values()) {
             if (!current(session)) continue;
+            session.player.getCurrentServer().ifPresent(server -> admissions.arrived(session.queueKey,server.getServerInfo().getName()));
             inviteToDiscord(session);
             enforce(session);
+            queueTick(session,now);
             LinkCompletionPoller completion = session.completion;
             if (completion != null) completion.tick();
             moveDefault(session);
@@ -236,7 +282,8 @@ public final class PassportVelocity {
             }), () -> { session.moving.set(false); session.player.disconnect(DENIED); });
     }
     private void moveDefault(Session session) {
-        if (!current(session)) return;
+        if (!current(session) || session.queueIntent.automaticPaused() || admissions.position(session.queueKey).isPresent()
+                || admissions.reservation(session.queueKey).isPresent() || session.connecting.get()) return;
         String currentServer = session.player.getCurrentServer().map(c -> c.getServerInfo().getName()).orElse("");
         RegisteredServer target = policies.get(session.player.getUniqueId())
             .flatMap(policy -> AutomaticRouting.target(policy, currentServer, waiting, defaultServer, Instant.now()))
@@ -244,13 +291,123 @@ public final class PassportVelocity {
         if (target == null) return;
         long attempt = session.routing.begin(System.nanoTime());
         if (attempt == 0) return;
-        try {
-            session.player.createConnectionRequest(target).connect().orTimeout(3,TimeUnit.SECONDS).whenComplete((result,error) -> {
-                if (session.routing.complete(attempt,error == null && result.isSuccessful(),System.nanoTime()) && current(session)) routingFailure(session);
+        long generation=session.queueIntent.generation();
+        refreshes.fresh(session.player.getUniqueId()).thenCompose(policy -> {
+            if(!current(session) || session.queueIntent.automaticPaused() || generation!=session.queueIntent.generation()) return CompletableFuture.completedFuture(false);
+            return admitAndConnect(session,target,policy,null,generation);
+        }).whenComplete((success,error) -> {
+            boolean waitingInQueue=admissions.position(session.queueKey).isPresent();
+            if(session.routing.complete(attempt,waitingInQueue || error==null && Boolean.TRUE.equals(success),System.nanoTime()) && current(session)) routingFailure(session);
+        });
+    }
+    private Set<AdmissionQueue.Key> occupants(String server) {
+        return proxy.getServer(server).map(value -> value.getPlayersConnected().stream().map(player -> {
+            Session session=sessions.get(player.getUniqueId());
+            return session!=null && session.player==player ? session.queueKey
+                : new AdmissionQueue.Key(player.getUniqueId(),"external-"+System.identityHashCode(player));
+        })
+            .collect(java.util.stream.Collectors.toSet())).orElse(Set.of());
+    }
+    private boolean adminDenied(Session session) { return session.player.getPermissionValue("passport.admin")==Tristate.FALSE; }
+    private void cancelQueueFor(Session session,String server) {
+        admissions.position(session.queueKey).map(AdmissionQueue.Position::ticket).filter(ticket -> ticket.server().equals(server)).ifPresent(admissions::cancel);
+    }
+    private CompletableFuture<Boolean> admitAndConnect(Session session,RegisteredServer target,Policy policy,AdmissionQueue.Ticket ticket,long generation) {
+        synchronized(session.queueIntent) {
+            if(!current(session) || !session.queueIntent.current(generation)) return CompletableFuture.completedFuture(false);
+            String server=target.getServerInfo().getName();
+            Policy latest=policies.get(session.player.getUniqueId()).orElse(policy);
+            AdmissionQueue.Decision decision=ticket==null
+                ? admissions.request(session.queueKey,server,latest,adminDenied(session),Instant.now(),System.nanoTime())
+                : admissions.promote(ticket,latest,adminDenied(session),Instant.now(),System.nanoTime());
+            if(decision.status()==AdmissionQueue.Status.QUEUED) {
+                if(decision.joined()) queueStatus(session,false);
+                return CompletableFuture.completedFuture(false);
+            }
+            if(decision.status()!=AdmissionQueue.Status.ALLOWED) {
+                if(decision.status()==AdmissionQueue.Status.DENIED) {
+                    cancelQueueFor(session,server); session.player.sendMessage(DENIED);
+                }
+                return CompletableFuture.completedFuture(false);
+            }
+            if(decision.reservation()==null) return CompletableFuture.completedFuture(true);
+            // An existing reservation belongs to a connection already in progress, possibly from another plugin.
+            if(!decision.joined()) return CompletableFuture.completedFuture(false);
+            AdmissionQueue.Reservation reservation=decision.reservation();
+            if(!session.connecting.compareAndSet(false,true)) { admissions.release(reservation,false,System.nanoTime()); return CompletableFuture.completedFuture(false); }
+            session.player.sendActionBar(Component.empty());
+            CompletableFuture<ConnectionRequestBuilder.Result> connection;
+            try { connection=session.player.createConnectionRequest(target).connect(); }
+            catch(RuntimeException error) {
+                session.connecting.set(false); admissions.release(reservation,true,System.nanoTime()); return CompletableFuture.failedFuture(error);
+            }
+            // Never release capacity merely because a wrapper timed out: the underlying connection could still succeed.
+            return connection.handle((result,error) -> {
+                session.connecting.set(false);
+                boolean success=error==null && result.isSuccessful()
+                    && session.player.getCurrentServer().map(current -> current.getServerInfo().getName().equals(server)).orElse(false);
+                if(success) admissions.arrived(session.queueKey,server);
+                else {
+                    if(error!=null || result.getStatus()==ConnectionRequestBuilder.Status.SERVER_DISCONNECTED) admissions.release(reservation,true,System.nanoTime());
+                    else admissions.releaseUnstarted(reservation);
+                    if(current(session) && admissions.position(session.queueKey).isEmpty()) {
+                        if(ticket!=null) session.queueIntent.failed();
+                        session.player.sendMessage(Component.text("서버에 연결하지 못했습니다. 잠시 후 다시 시도해주세요.",NamedTextColor.YELLOW));
+                    }
+                }
+                return success;
             });
-        } catch (RuntimeException error) {
-            if (session.routing.complete(attempt,false,System.nanoTime())) routingFailure(session);
         }
+    }
+    private void queueStatus(Session session,boolean showEmpty) {
+        if(!current(session) || !session.playReady) return;
+        Optional<AdmissionQueue.Position> status=admissions.position(session.queueKey);
+        if(status.isEmpty()) {
+            if(showEmpty) session.player.sendMessage(Component.text("현재 대기 중인 서버가 없습니다.",NamedTextColor.GRAY));
+            return;
+        }
+        Policy policy=policies.get(session.player.getUniqueId()).orElse(null);
+        AdmissionQueue.Position position=status.get();
+        if(policy==null || !policy.allows(position.ticket().server(),Instant.now())) return;
+        session.player.sendMessage(Component.text(policy.label(position.ticket().server())+" 입장 대기 · "+position.position()+"번째 / "+position.total()+"명",NamedTextColor.YELLOW)
+            .append(Component.text("  [대기 취소]",NamedTextColor.GREEN).clickEvent(ClickEvent.runCommand("/passport queue leave"))));
+    }
+    private void leaveQueue(Session session) {
+        boolean removed;
+        synchronized(session.queueIntent) {
+            session.queueIntent.cancel();
+            removed=admissions.cancel(session.queueKey);
+        }
+        session.player.sendActionBar(Component.empty());
+        session.player.sendMessage(Component.text(removed ? "대기열에서 나왔습니다. /서버 명령어로 다시 선택할 수 있습니다." : "현재 대기 중인 서버가 없습니다.",NamedTextColor.GRAY));
+    }
+    private void queueTick(Session session,long clock) {
+        AdmissionQueue.Position position=admissions.position(session.queueKey).orElse(null);
+        if(position==null) return;
+        AdmissionQueue.Ticket ticket=position.ticket();
+        Policy policy=policies.get(session.player.getUniqueId()).orElse(null);
+        if(policy==null || !policy.allows(ticket.server(),Instant.now())) {
+            if(admissions.cancel(ticket)) {
+                session.player.sendActionBar(Component.empty());
+                session.player.sendMessage(Component.text("접속 권한을 확인할 수 없어 대기열에서 나왔습니다.",NamedTextColor.YELLOW));
+            }
+            return;
+        }
+        if(session.playReady && clock>=session.nextQueueBar) {
+            session.nextQueueBar=clock+TimeUnit.SECONDS.toNanos(3);
+            session.player.sendActionBar(Component.text(policy.label(ticket.server())+" 입장 대기 · "+position.position()+" / "+position.total()+" · /passport queue leave",NamedTextColor.YELLOW));
+        }
+        boolean bypass=AdmissionQueue.bypass(policy,session.player.getUniqueId(),ticket.server(),adminDenied(session),Instant.now());
+        if(clock<session.nextQueueCheck || !session.playReady || !admissions.canAttempt(ticket,bypass,clock)
+                || !session.queueChecking.compareAndSet(false,true)) return;
+        session.nextQueueCheck=clock+TimeUnit.SECONDS.toNanos(5);
+        long generation=session.queueIntent.generation();
+        refreshes.fresh(session.player.getUniqueId()).thenCompose(fresh -> {
+            if(!current(session) || generation!=session.queueIntent.generation()) return CompletableFuture.completedFuture(false);
+            RegisteredServer target=proxy.getServer(ticket.server()).orElse(null);
+            if(target==null) { admissions.cancel(ticket); return CompletableFuture.completedFuture(false); }
+            return admitAndConnect(session,target,fresh,ticket,generation);
+        }).whenComplete((success,error) -> session.queueChecking.set(false));
     }
     private void routingFailure(Session session) {
         if (current(session)) session.player.sendMessage(Component.text("로비 연결을 재시도합니다. /passport status",NamedTextColor.YELLOW));
@@ -390,8 +547,12 @@ public final class PassportVelocity {
         return now-previous>=TimeUnit.SECONDS.toNanos(1) && session.lastCommand.compareAndSet(previous,now);
     }
     private void transfer(Session session,String query) {
+        if(session.connecting.get() || admissions.reservation(session.queueKey).isPresent()) {
+            session.player.sendMessage(Component.text("서버 연결을 처리 중입니다. 잠시 후 다시 시도해주세요.",NamedTextColor.YELLOW)); return;
+        }
+        long generation=session.queueIntent.change();
         refreshes.fresh(session.player.getUniqueId()).whenComplete((policy,error) -> {
-            if(!current(session)) return;
+            if(!current(session) || generation!=session.queueIntent.generation()) return;
             if(error!=null || !policy.active(Instant.now())) { session.player.sendMessage(DENIED); return; }
             if(query.isBlank()) {
                 if(policy.allowedServerIds().isEmpty()) session.player.sendMessage(Component.text("접속 가능한 서버가 없습니다."));
@@ -409,13 +570,13 @@ public final class PassportVelocity {
             if(ids.size()!=1) { session.player.sendMessage(Component.text(ids.isEmpty() ? "접속 가능한 서버를 찾을 수 없습니다." : "같은 서버 이름이 여러 개입니다. 서버 목록에서 선택하세요.")); return; }
             String id=ids.getFirst();
             if(session.player.getCurrentServer().map(connection -> connection.getServerInfo().getName().equals(id)).orElse(false)) {
+                admissions.cancel(session.queueKey); session.player.sendActionBar(Component.empty());
                 session.player.sendMessage(Component.text("이미 접속 중인 서버입니다.")); return;
             }
             proxy.getServer(id).ifPresentOrElse(target -> {
                 if(!policy.allows(id,Instant.now())) { session.player.sendMessage(DENIED); return; }
-                session.player.createConnectionRequest(target).connect().orTimeout(3,TimeUnit.SECONDS).whenComplete((result,failure) -> {
-                    if(current(session) && (failure!=null || !result.isSuccessful())) session.player.sendMessage(Component.text("서버에 연결하지 못했습니다. 잠시 후 다시 시도하세요.",NamedTextColor.YELLOW));
-                });
+                session.queueIntent.resume();
+                admitAndConnect(session,target,policy,null,generation).exceptionally(failure -> false);
             },() -> session.player.sendMessage(Component.text("현재 연결할 수 없는 서버입니다.",NamedTextColor.YELLOW)));
         });
     }
@@ -461,8 +622,10 @@ public final class PassportVelocity {
         ServerConnection targetConnection=target.getCurrentServer().orElse(null);
         if(targetConnection==null) { session.player.sendMessage(Component.text("대상이 아직 서버에 입장하지 않았습니다.")); return; }
         String destination=targetConnection.getServerInfo().getName();
+        if(session.connecting.get() || admissions.reservation(session.queueKey).isPresent()) { session.player.sendMessage(Component.text("서버 연결을 처리 중입니다.")); return; }
+        long generation=session.queueIntent.change();
         refreshes.fresh(session.player.getUniqueId()).whenComplete((policy,error) -> {
-            if(!current(session)) return;
+            if(!current(session) || generation!=session.queueIntent.generation()) return;
             if(error!=null || !policy.administrator() || !policy.allows(destination,Instant.now())
                 || session.player.getPermissionValue("passport.admin")==Tristate.FALSE) { session.player.sendMessage(DENIED); return; }
             var request=TeleportMessage.request(session.player.getUniqueId(),target.getUniqueId(),destination,Instant.now());
@@ -478,10 +641,10 @@ public final class PassportVelocity {
                 if(backend==null || !backend.getServerInfo().getName().equals(destination)
                     || !backend.sendPluginMessage(TELEPORT_CHANNEL,request.encode(teleportSecret))) teleports.fail(request.requestId());
             };
-            if(session.player.getCurrentServer().map(connection -> connection.getServerInfo().getName().equals(destination)).orElse(false)) send.run();
-            else session.player.createConnectionRequest(targetConnection.getServer()).connect().orTimeout(4,TimeUnit.SECONDS)
-                .whenComplete((connection,failure) -> {
-                    if(failure!=null || !connection.isSuccessful()) teleports.fail(request.requestId());
+            if(session.player.getCurrentServer().map(connection -> connection.getServerInfo().getName().equals(destination)).orElse(false)) { admissions.cancel(session.queueKey); send.run(); }
+            else admitAndConnect(session,targetConnection.getServer(),policy,null,generation)
+                .whenComplete((connected,failure) -> {
+                    if(failure!=null || !Boolean.TRUE.equals(connected)) teleports.fail(request.requestId());
                     else proxy.getScheduler().buildTask(this,send).delay(Duration.ofMillis(300)).schedule();
                 });
         });
@@ -515,15 +678,21 @@ public final class PassportVelocity {
                 case "link" -> createLink(session);
                 case "web" -> web(player,false);
                 case "server" -> transfer(session,String.join(" ",Arrays.copyOfRange(args,1,args.length)));
+                case "queue" -> {
+                    if(args.length==1) queueStatus(session,true);
+                    else if(args.length==2 && args[1].equalsIgnoreCase("leave")) leaveQueue(session);
+                    else player.sendMessage(Component.text("/passport queue [leave]"));
+                }
                 case "status" -> refresh(session).whenComplete((valid,error) -> {
                     if(!current(session)) return;
                     if(error!=null || !Boolean.TRUE.equals(valid)) { player.sendMessage(DENIED); return; }
                     policies.get(player.getUniqueId()).ifPresent(policy -> player.sendMessage(Component.text("Passport · "+(policy.active(Instant.now()) ? "인증 완료" : "인증 필요")+" · 접속 가능 서버 "+policy.allowedServerIds().size()+"개")));
                     statusStatistics(session);
+                    queueStatus(session,false);
                     session.routing.retryManually();
                     moveDefault(session);
                 });
-                default -> player.sendMessage(Component.text("/passport [server|status|web]"));
+                default -> player.sendMessage(Component.text("/passport [server|queue|status|web]"));
             }
         }
         @Override public List<String> suggest(Invocation invocation) {
@@ -531,8 +700,9 @@ public final class PassportVelocity {
             if(args.length>1 && args[0].equalsIgnoreCase("server")) return serverSuggestions(invocation.source(),String.join(" ",Arrays.copyOfRange(args,1,args.length)));
             if(args.length==2 && Set.of("player","tp").contains(args[0].toLowerCase(Locale.ROOT)))
                 return playerSuggestions(invocation.source(),args[1]);
+            if(args.length==2 && args[0].equalsIgnoreCase("queue")) return CommandSelection.suggestions(List.of("leave"),args[1]);
             if(args.length>1) return List.of();
-            List<String> commands=new ArrayList<>(List.of("server","status","web","link"));
+            List<String> commands=new ArrayList<>(List.of("server","queue","status","web","link"));
             if(canSuggestAdmin(invocation.source())) commands.addAll(List.of("player","adminweb","tp","announce"));
             String prefix=args.length==0 ? "" : args[0].toLowerCase(Locale.ROOT); return commands.stream().filter(command -> command.startsWith(prefix)).toList();
         }

@@ -12,6 +12,10 @@ dependencies {
     implementation("com.google.code.gson:gson:2.13.2")
     testImplementation(platform("org.junit:junit-bom:5.12.2"))
     testImplementation("org.junit.jupiter:junit-jupiter")
+    testImplementation("com.velocitypowered:velocity-api:4.2.0") {
+        // Exercise the same Gson version packaged in the plugin, rather than the API's newer transitive copy.
+        exclude(group = "com.google.code.gson", module = "gson")
+    }
     testRuntimeOnly("org.junit.platform:junit-platform-launcher")
 }
 tasks.test { useJUnitPlatform() }

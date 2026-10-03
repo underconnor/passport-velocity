@@ -60,7 +60,12 @@ public record Policy(UUID minecraftUuid, String status, Set<String> allowedServe
         boolean member = display.has("member") && display.get("member").getAsBoolean();
         String year = display.has("admissionYear") && !display.get("admissionYear").isJsonNull() ? display.get("admissionYear").getAsString() : null;
         if (year != null && !year.matches("[0-9]{2}")) throw new IllegalArgumentException("admissionYear");
-        boolean administrator = o.has("administrator") && o.get("administrator").getAsBoolean();
+        boolean administrator = false;
+        if(o.has("administrator")) {
+            JsonElement value=o.get("administrator");
+            if(!value.isJsonPrimitive() || !value.getAsJsonPrimitive().isBoolean()) throw new IllegalArgumentException("administrator");
+            administrator=value.getAsBoolean();
+        }
         Map<String,String> labels = new HashMap<>(), commandNames = new HashMap<>();
         Set<String> uniqueCommands = new HashSet<>();
         if (o.has("allowedServers")) for (JsonElement item : o.getAsJsonArray("allowedServers")) {
