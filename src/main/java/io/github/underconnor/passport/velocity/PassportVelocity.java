@@ -47,11 +47,13 @@ public final class PassportVelocity {
         final AtomicBoolean refreshing = new AtomicBoolean(), linking = new AtomicBoolean(), moving = new AtomicBoolean();
         final AtomicLong lastCommand = new AtomicLong(), linkGeneration = new AtomicLong();
         final RoutingAttempts routing = new RoutingAttempts();
+        final DiscordInvitation discordInvitation;
         volatile LinkCompletionPoller completion;
         volatile String linkId;
         volatile Instant linkExpiry;
         volatile long nextRefresh;
-        Session(Player player) { this.player = player; }
+        volatile boolean playReady;
+        Session(Player player) { this.player = player; this.discordInvitation = new DiscordInvitation(player.getUniqueId()); }
     }
     @Inject public PassportVelocity(ProxyServer proxy, Logger logger) { this.proxy = proxy; this.logger = logger; }
     @Subscribe public void initialize(ProxyInitializeEvent event) {
@@ -73,10 +75,14 @@ public final class PassportVelocity {
                 System.getenv("API_SERVICE_TOKEN"), Boolean.parseBoolean(ApiClient.env("PASSPORT_ALLOW_INSECURE_HTTP", "false")));
             teleportSecret=TeleportSecrets.resolve(System.getenv("PASSPORT_TELEPORT_SECRET"),System.getenv("API_SERVICE_TOKEN"));
             proxy.getChannelRegistrar().register(TELEPORT_CHANNEL);
-            refreshes = new PolicyRefreshes(uuid -> api.policy(uuid).thenApply(policy -> {
-                if (!policies.acceptOrCurrent(policy)) throw new CompletionException(new IllegalStateException("Stale policy response"));
-                return policy;
-            }));
+            refreshes = new PolicyRefreshes(uuid -> {
+                Session requestingSession = sessions.get(uuid);
+                return api.policy(uuid).thenApply(policy -> {
+                    if (!policies.acceptOrCurrent(policy)) throw new CompletionException(new IllegalStateException("Stale policy response"));
+                    if (requestingSession != null && current(requestingSession)) requestingSession.discordInvitation.observe(policy,Instant.now());
+                    return policy;
+                });
+            });
             eventPoller = new PolicyEventPoller(api::events,
                 () -> sessions.values().stream().filter(this::current).map(s -> s.player.getUniqueId()).collect(java.util.stream.Collectors.toSet()),
                 this::refreshFromEvent);
@@ -150,6 +156,21 @@ public final class PassportVelocity {
             });
         }
     }
+    @Subscribe public void postConnected(ServerPostConnectEvent event) {
+        Session session = sessions.get(event.getPlayer().getUniqueId());
+        if (session != null && session.player == event.getPlayer() && current(session)) {
+            session.playReady = true;
+            inviteToDiscord(session);
+        }
+    }
+    private void inviteToDiscord(Session session) {
+        if (session.discordInvitation.claim(policies.get(session.player.getUniqueId()).orElse(null),
+                current(session),session.playReady && session.player.getCurrentServer().isPresent(),Instant.now()) && current(session)) {
+            session.player.sendMessage(Component.text("디스코드 서버에 가입하시면 더 다양한 정보를 빠르게 얻으실 수 있습니다.",NamedTextColor.GRAY)
+                .append(Component.newline()).append(Component.text("[디스코드 서버 가입하기]",NamedTextColor.GREEN)
+                    .clickEvent(ClickEvent.openUrl("https://discord.gg/V3ABprEEmw"))));
+        }
+    }
     @Subscribe(order=PostOrder.LAST) public void kicked(KickedFromServerEvent event) {
         if (!ready || event.getServer().getServerInfo().getName().equals(waiting)) {
             event.setResult(KickedFromServerEvent.DisconnectPlayer.create(DENIED));
@@ -183,6 +204,7 @@ public final class PassportVelocity {
         long now = System.nanoTime();
         for (Session session : sessions.values()) {
             if (!current(session)) continue;
+            inviteToDiscord(session);
             enforce(session);
             LinkCompletionPoller completion = session.completion;
             if (completion != null) completion.tick();

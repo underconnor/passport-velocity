@@ -92,4 +92,35 @@ class PolicyTest {
         assertFalse(policy.active(now)); assertFalse(policy.allows("lobby",now));
         assertFalse(policy.valid(Instant.parse("2026-09-30T00:01:00Z")));
     }
+    @Test void discordLinkFlagIsOptionalAndStrictlyBoolean() {
+        String body=json("active",1,"2026-09-30T00:00:00Z","2026-09-30T00:01:00Z");
+        assertNull(Policy.parse(body,uuid,now).discordLinked());
+        for(boolean linked:new boolean[]{true,false}) {
+            Policy parsed=Policy.parse(body.replace("\"policyVersion\":1","\"discordLinked\":"+linked+",\"policyVersion\":1"),uuid,now);
+            assertEquals(linked,parsed.discordLinked()); assertTrue(parsed.allows("lobby",now));
+        }
+        for(String invalid:new String[]{"null","\"false\"","\"true\"","0","1","[]","{}"})
+            assertThrows(IllegalArgumentException.class,() -> Policy.parse(body.replace("\"policyVersion\":1","\"discordLinked\":"+invalid+",\"policyVersion\":1"),uuid,now));
+    }
+    @Test void discordLinkCannotContradictAnUnlinkedOrMissingSubject() {
+        String body=json("unlinked",1,"2026-09-30T00:00:00Z","2026-09-30T00:01:00Z")
+            .replace("\"policyVersion\":1","\"discordLinked\":true,\"policyVersion\":1");
+        assertThrows(IllegalArgumentException.class,() -> Policy.parse(body,uuid,now));
+        String inactive=body.replace("\"unlinked\"","\"stale\"");
+        assertThrows(IllegalArgumentException.class,() -> Policy.parse(inactive.replace("\"22222222-2222-4222-8222-222222222222\"","null"),uuid,now));
+        assertThrows(IllegalArgumentException.class,() -> Policy.parse(inactive.replace("\"subjectId\":\"22222222-2222-4222-8222-222222222222\",",""),uuid,now));
+    }
+    @Test void inactiveSchoolPolicyMayStillHaveAVerifiedDiscordLink() {
+        for(String status:new String[]{"pending","suspended","revoked","stale"}) {
+            String body=json(status,1,"2026-09-30T00:00:00Z","2026-09-30T00:01:00Z")
+                .replace("\"policyVersion\":1","\"discordLinked\":true,\"policyVersion\":1");
+            Policy parsed=Policy.parse(body,uuid,now);
+            assertTrue(parsed.discordLinked()); assertFalse(parsed.allows("lobby",now));
+        }
+    }
+    @Test void legacyConstructorsKeepDiscordLinkUnknown() {
+        assertNull(new Policy(uuid,"active",java.util.Set.of("lobby"),"","",1,now,now.plusSeconds(60)).discordLinked());
+        assertNull(new Policy(uuid,"active",java.util.Set.of("lobby"),"","",1,now,now.plusSeconds(60),false,null,false,
+            java.util.Map.of(),false,null,java.util.Set.of(),false,java.util.Map.of()).discordLinked());
+    }
 }

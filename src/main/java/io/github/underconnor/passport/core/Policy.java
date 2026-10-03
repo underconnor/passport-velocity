@@ -8,7 +8,10 @@ import java.util.*;
 public record Policy(UUID minecraftUuid, String status, Set<String> allowedServerIds,
                      String roleLabel, String displayName, long version, Instant issuedAt, Instant expiresAt,
                      boolean member, String admissionYear, boolean administrator, Map<String,String> serverLabels, boolean telemetryEnabled, UUID telemetryEpoch,
-                     Set<String> telemetryServerIds, boolean presenceEnabled, Map<String,String> serverCommandNames) {
+                     Set<String> telemetryServerIds, boolean presenceEnabled, Map<String,String> serverCommandNames, Boolean discordLinked) {
+    public Policy(UUID uuid, String status, Set<String> ids, String role, String name, long version, Instant issued, Instant expires, boolean member, String year, boolean admin, Map<String,String> labels, boolean telemetry, UUID epoch, Set<String> telemetryIds, boolean presence, Map<String,String> commands) {
+        this(uuid,status,ids,role,name,version,issued,expires,member,year,admin,labels,telemetry,epoch,telemetryIds,presence,commands,null);
+    }
     public Policy(UUID uuid, String status, Set<String> ids, String role, String name, long version, Instant issued, Instant expires, boolean member, String year, boolean admin, Map<String,String> labels, boolean telemetry, UUID epoch, Set<String> telemetryIds, boolean presence) {
         this(uuid,status,ids,role,name,version,issued,expires,member,year,admin,labels,telemetry,epoch,telemetryIds,presence,Map.of());
     }
@@ -27,6 +30,16 @@ public record Policy(UUID minecraftUuid, String status, Set<String> allowedServe
         String status = o.get("status").getAsString();
         if (!STATUSES.contains(status)) throw new IllegalArgumentException("status");
         if (status.equals("active")) UUID.fromString(o.get("subjectId").getAsString());
+        Boolean discordLinked = null;
+        if (o.has("discordLinked")) {
+            JsonElement value = o.get("discordLinked");
+            if (!value.isJsonPrimitive() || !value.getAsJsonPrimitive().isBoolean()) throw new IllegalArgumentException("discordLinked");
+            discordLinked = value.getAsBoolean();
+            if (discordLinked) {
+                if (status.equals("unlinked") || !o.has("subjectId") || o.get("subjectId").isJsonNull()) throw new IllegalArgumentException("discordLinked subject");
+                UUID.fromString(o.get("subjectId").getAsString());
+            }
+        }
         Set<String> ids = new HashSet<>();
         for (JsonElement value : o.getAsJsonArray("allowedServerIds")) {
             String id = value.getAsString();
@@ -86,7 +99,7 @@ public record Policy(UUID minecraftUuid, String status, Set<String> allowedServe
         }
         // Older APIs did not advertise expanded game consent: do not expose their displayName as a real name.
         if(telemetry==null) { name=""; member=false; year=null; }
-        return new Policy(uuid, status, Set.copyOf(ids), role, name, version, issued, expiry,member,year,administrator,Map.copyOf(labels),telemetryEnabled,epoch,Set.copyOf(telemetryServers),presenceEnabled,Map.copyOf(commandNames));
+        return new Policy(uuid, status, Set.copyOf(ids), role, name, version, issued, expiry,member,year,administrator,Map.copyOf(labels),telemetryEnabled,epoch,Set.copyOf(telemetryServers),presenceEnabled,Map.copyOf(commandNames),discordLinked);
     }
     private static String plain(String value, int limit) {
         if (value.codePointCount(0,value.length()) > limit || value.codePoints().anyMatch(Character::isISOControl))
