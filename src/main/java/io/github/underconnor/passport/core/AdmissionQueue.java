@@ -99,6 +99,21 @@ public final class AdmissionQueue {
         queues.get(ticket.server()).remove(ticket.key(),ticket); return true;
     }
     public synchronized boolean cancel(Key key) { Ticket ticket=tickets.get(key); return ticket!=null && cancel(ticket); }
+    /** Restore a failed promotion in its original FIFO position, after its connection has terminated.
+     * The caller must first recheck the current session, selection generation and access policy. */
+    public synchronized boolean restore(Ticket ticket,long clock) {
+        if(ticket==null || !capacities.containsKey(ticket.server()) || tickets.containsKey(ticket.key())
+            || occupants.apply(ticket.server()).contains(ticket.key())) return false;
+        Reservation pending=reservations.get(ticket.key());
+        if(pending!=null && pending.server().equals(ticket.server())) return false;
+        tickets.put(ticket.key(),ticket);
+        LinkedHashMap<Key,Ticket> queue=queues.get(ticket.server());
+        List<Ticket> ordered=new ArrayList<>(queue.values()); ordered.add(ticket);
+        ordered.sort(Comparator.comparingLong(Ticket::id));
+        queue.clear(); ordered.forEach(value -> queue.put(value.key(),value));
+        retryAfter.merge(ticket.server(),clock+TimeUnit.SECONDS.toNanos(5),Math::max);
+        return true;
+    }
     public synchronized Optional<Reservation> reservation(Key key) { return Optional.ofNullable(reservations.get(key)); }
     /** Only one PreConnect event may initiate the physical connection behind a reserved slot. */
     public synchronized boolean begin(Reservation reservation) {

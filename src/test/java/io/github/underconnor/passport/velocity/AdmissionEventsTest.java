@@ -126,6 +126,7 @@ class AdmissionEventsTest {
 
     static final class Person {
         UUID uuid; Player player; boolean active=true; String server; Tristate permission=Tristate.UNDEFINED;
+        final Map<String,ServerConnection> backends=new HashMap<>();
         int connectRequests; CompletableFuture<ConnectionRequestBuilder.Result> connection=new CompletableFuture<>();
         List<Component> messages=new ArrayList<>();
         List<byte[]> packets=new ArrayList<>();
@@ -180,13 +181,13 @@ class AdmissionEventsTest {
                 case "getPermissionValue" -> person.permission;
                 case "disconnect" -> { person.active=false; yield null; }
                 case "sendMessage","sendActionBar" -> { if(args[args.length-1] instanceof Component text) person.messages.add(text); yield null; }
-                case "getCurrentServer" -> person.server==null ? Optional.empty() : Optional.of(stub(ServerConnection.class,(connection,parameters) -> switch(connection.getName()) {
+                case "getCurrentServer" -> person.server==null ? Optional.empty() : Optional.of(person.backends.computeIfAbsent(person.server,name -> stub(ServerConnection.class,(connection,parameters) -> switch(connection.getName()) {
                     case "sendPluginMessage" -> { person.packets.add((byte[])parameters[1]); yield true; }
                     case "getPlayer" -> person.player;
-                    case "getServer" -> servers.get(person.server);
-                    case "getServerInfo" -> servers.get(person.server).getServerInfo();
+                    case "getServer" -> servers.get(name);
+                    case "getServerInfo" -> servers.get(name).getServerInfo();
                     default -> null;
-                }));
+                })));
                 case "createConnectionRequest" -> stub(ConnectionRequestBuilder.class,(request,parameters) -> {
                     if(request.getName().equals("getServer")) return args[0];
                     if(request.getName().equals("connect")) { person.connectRequests++; return person.connection; }

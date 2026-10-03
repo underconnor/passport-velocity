@@ -10,5 +10,4 @@ public final class QueueIntent {
     public synchronized boolean automaticPaused() { return automaticPaused; }
     public synchronized void cancel() { generation++; automaticPaused=true; }
     public synchronized void resume() { automaticPaused=false; }
-    public synchronized void failed() { automaticPaused=true; }
 }

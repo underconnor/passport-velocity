@@ -14,7 +14,8 @@ class QueueIntentTest {
         QueueIntent old=new QueueIntent(); old.cancel();
         QueueIntent reconnected=new QueueIntent(); assertFalse(reconnected.automaticPaused()); assertEquals(0,reconnected.generation());
     }
-    @Test void aFailedQueueConnectionPausesAutomaticReenrolment() {
-        QueueIntent intent=new QueueIntent(); intent.failed(); assertTrue(intent.automaticPaused());
+    @Test void forcedEvacuationCanResumeRoutingWithoutChangingTheSelectedGeneration() {
+        QueueIntent intent=new QueueIntent(); intent.cancel(); long generation=intent.generation();
+        intent.resume(); assertFalse(intent.automaticPaused()); assertTrue(intent.current(generation));
     }
 }

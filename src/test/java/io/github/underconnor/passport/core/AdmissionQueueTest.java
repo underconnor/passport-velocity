@@ -181,4 +181,31 @@ class AdmissionQueueTest {
             assertEquals(1,admitted); assertTrue(queue.reservation(player).isPresent());
         }
     }
+    @Test void failedPromotionRestoresTheOriginalOrderAndBacksOffBeforeRetry() {
+        full("lobby"); var first=key(); var second=key();
+        request(first,"lobby",false,0); request(second,"lobby",false,0);
+        var original=ticket(first); online.remove("lobby");
+        var slot=queue.promote(original,policy(first,false),false,now,0).reservation();
+        assertFalse(queue.restore(original,0)); // A physical connection still owns the slot.
+        queue.release(slot,true,0); assertTrue(queue.restore(original,0));
+        assertEquals(original,ticket(first)); assertEquals(1,queue.position(first).orElseThrow().position());
+        assertEquals(2,queue.position(second).orElseThrow().position());
+        assertFalse(queue.canAttempt(original,false,TimeUnit.SECONDS.toNanos(4)));
+        assertTrue(queue.canAttempt(original,false,TimeUnit.SECONDS.toNanos(5)));
+        assertFalse(queue.canAttempt(ticket(second),false,TimeUnit.SECONDS.toNanos(5)));
+    }
+    @Test void restoreCannotReplaceAnotherSelectionOrDuplicateAnArrivedPlayer() {
+        full("lobby"); full("build"); var player=key(); request(player,"lobby",false,0);
+        var original=ticket(player); request(player,"build",false,0);
+        assertFalse(queue.restore(original,0)); assertEquals("build",ticket(player).server());
+        queue.cancel(player); online.put("lobby",Set.of(player));
+        assertFalse(queue.restore(original,0)); assertTrue(queue.position(player).isEmpty());
+    }
+    @Test void fallbackLimboReservationDoesNotPreventRestoringTheFailedDestination() {
+        full("lobby"); var player=key(); request(player,"lobby",false,0);
+        var original=ticket(player); queue.cancel(player);
+        var fallback=queue.waiting(player,"limbo",0).reservation();
+        assertTrue(queue.restore(original,0)); assertEquals(fallback,queue.reservation(player).orElseThrow());
+        assertEquals(original,ticket(player));
+    }
 }

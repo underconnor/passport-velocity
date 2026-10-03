@@ -18,15 +18,16 @@ class RoutingAttemptsTest {
         long next=r.begin(seconds(2)); assertNotEquals(0,next); r.complete(next,true,seconds(2));
         long third=r.begin(seconds(2)); assertNotEquals(0,third); assertTrue(r.complete(third,false,seconds(2)));
     }
-    @Test void repeatedFailuresCapAtThirtySecondsThenStopUntilExplicitRetry() {
+    @Test void extendedOutageKeepsRetryingWithThirtySecondBackoffAndRecoversWithoutManualInput() {
         RoutingAttempts r=new RoutingAttempts(); long now=0;
-        for(int i=0;i<6;i++) {
+        for(int i=0;i<100;i++) {
             long attempt=r.begin(now); assertNotEquals(0,attempt);
             assertEquals(i==0,r.complete(attempt,false,now));
             if(i>=4) { assertEquals(0,r.begin(now+seconds(29))); }
             now+=seconds(30);
         }
-        assertEquals(0,r.begin(now+seconds(3600)));
-        r.retryManually(); assertNotEquals(0,r.begin(now));
+        long recovered=r.begin(now); assertNotEquals(0,recovered);
+        assertFalse(r.complete(recovered,true,now));
+        assertNotEquals(0,r.begin(now));
     }
 }
