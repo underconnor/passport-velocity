@@ -52,6 +52,7 @@ public final class PassportVelocity {
         final AtomicBoolean refreshing = new AtomicBoolean(), linking = new AtomicBoolean(), moving = new AtomicBoolean();
         final AtomicBoolean queueChecking = new AtomicBoolean(), connecting = new AtomicBoolean();
         final AtomicLong lastCommand = new AtomicLong(), linkGeneration = new AtomicLong();
+        final AtomicLong lastWhisper = new AtomicLong(Long.MIN_VALUE);
         final QueueIntent queueIntent = new QueueIntent();
         final RoutingAttempts routing = new RoutingAttempts();
         final DiscordInvitation discordInvitation;
@@ -62,6 +63,8 @@ public final class PassportVelocity {
         volatile Instant linkExpiry;
         volatile long nextRefresh;
         volatile boolean playReady;
+        int tabCount=-1;
+        long nextTabRefresh;
         volatile long nextQueueCheck, nextQueueBar;
         Session(Player player) {
             this.player = player; this.discordInvitation = new DiscordInvitation(player.getUniqueId());
@@ -72,6 +75,7 @@ public final class PassportVelocity {
     @Subscribe public void initialize(ProxyInitializeEvent event) {
         proxy.getCommandManager().register(proxy.getCommandManager().metaBuilder("passport").plugin(this).build(), new PassportCommand());
         proxy.getCommandManager().register(proxy.getCommandManager().metaBuilder("서버").plugin(this).build(), new ServerShortcut());
+        proxy.getCommandManager().register(proxy.getCommandManager().metaBuilder("msg").aliases("tell","w","귓").plugin(this).build(),new WhisperCommand());
         var builtin=proxy.getCommandManager().getCommandMeta("server");
         if(builtin!=null) proxy.getCommandManager().unregister(builtin);
         proxy.getCommandManager().unregister("velocity:server");
@@ -124,6 +128,7 @@ public final class PassportVelocity {
         Session session = new Session(player);
         Session previous=sessions.put(player.getUniqueId(), session);
         if(previous!=null) { admissions.disconnected(previous.queueKey); cancel(previous); }
+        updateNetworkTab(null,null);
     }
     @Subscribe(order=PostOrder.LAST) public EventTask initial(PlayerChooseInitialServerEvent event) {
         Session session = sessions.get(event.getPlayer().getUniqueId());
@@ -202,6 +207,7 @@ public final class PassportVelocity {
                 .filter(server -> server.getServerInfo().getName().equals(visit.serverId()))
                 .ifPresent(server -> server.sendPluginMessage(DEPARTURE_CHANNEL,visit.encode(teleportSecret)));
             session.playReady = true;
+            updateNetworkTab(null,session);
             session.player.getCurrentServer().ifPresent(server -> admissions.arrived(session.queueKey,server.getServerInfo().getName()));
             if(event.getPreviousServer()==null) queueStatus(session,false);
             inviteToDiscord(session);
@@ -241,9 +247,30 @@ public final class PassportVelocity {
         Session session = sessions.get(event.getPlayer().getUniqueId());
         if (session != null && session.player == event.getPlayer() && sessions.remove(event.getPlayer().getUniqueId(), session)) {
             admissions.disconnected(session.queueKey); cancel(session);
+            updateNetworkTab(event.getPlayer(),null);
         }
     }
-    @Subscribe public void shutdown(ProxyShutdownEvent event) { ready = false; teleports.close(); proxyCommands.clear(); proxy.getChannelRegistrar().unregister(TELEPORT_CHANNEL,DEPARTURE_CHANNEL,COMMAND_CHANNEL); if (api != null) api.close(); }
+    @Subscribe public synchronized void shutdown(ProxyShutdownEvent event) {
+        for(Session session:sessions.values()) if(current(session) && session.playReady)
+            session.player.sendPlayerListHeaderAndFooter(Component.empty(),Component.empty());
+        ready = false; teleports.close(); proxyCommands.clear(); proxy.getChannelRegistrar().unregister(TELEPORT_CHANNEL,DEPARTURE_CHANNEL,COMMAND_CHANNEL); if (api != null) api.close();
+    }
+    private synchronized void updateNetworkTab(Player departing,Session force) {
+        if(!ready) return;
+        int online=(int)proxy.getAllPlayers().stream().filter(Player::isActive).filter(player -> player!=departing)
+            .filter(player -> { Session session=sessions.get(player.getUniqueId()); return session!=null && session.player==player && current(session); })
+            .map(Player::getUniqueId).distinct().count();
+        Component header=NetworkTabPresentation.header(),footer=NetworkTabPresentation.footer(online);
+        long clock=System.nanoTime();
+        for(Session session:sessions.values()) if(current(session) && session.playReady && (session==force || session.tabCount!=online
+            || clock>=session.nextTabRefresh
+            || !header.equals(session.player.getPlayerListHeader()) || !footer.equals(session.player.getPlayerListFooter()))) {
+            session.player.sendPlayerListHeaderAndFooter(header,footer);
+            session.tabCount=online;
+            // Backend packets can bypass the API's cached header/footer, particularly NanoLimbo's join packet.
+            session.nextTabRefresh=clock+TimeUnit.SECONDS.toNanos(session==force ? 1 : 10);
+        }
+    }
     private boolean current(Session session) { return ready && session.player.isActive() && sessions.get(session.player.getUniqueId()) == session; }
     private CompletableFuture<Boolean> refresh(Session session) {
         if (!current(session)) return CompletableFuture.completedFuture(false);
@@ -258,6 +285,8 @@ public final class PassportVelocity {
         });
     }
     private void tick() {
+        if(!ready) return;
+        updateNetworkTab(null,null);
         long now = System.nanoTime();
         for(AdmissionQueue.Reservation reservation:admissions.overdue(now)) {
             Session session=sessions.get(reservation.key().uuid());
@@ -508,7 +537,10 @@ public final class PassportVelocity {
     }
     @Subscribe(order=PostOrder.LAST) public void blockBuiltin(CommandExecuteEvent event) {
         if(!(event.getCommandSource() instanceof Player player)) return;
-        if(CommandSelection.blockedBuiltin(event.getCommand())) {
+        if(WhisperSelection.owns(event.getCommand()) && !canWhisper(player)) {
+            event.setResult(CommandExecuteEvent.CommandResult.denied());
+            player.sendMessage(Component.text("귓속말을 사용할 수 없습니다.",NamedTextColor.GRAY));
+        } else if(CommandSelection.blockedBuiltin(event.getCommand())) {
             event.setResult(CommandExecuteEvent.CommandResult.denied());
             event.getCommandSource().sendMessage(Component.text("/서버 <서버명>",NamedTextColor.YELLOW));
         } else if(!canInspect(player) && CommandPresentation.informationCommand(event.getCommand())) {
@@ -692,6 +724,68 @@ public final class PassportVelocity {
     }
     private boolean canSuggestAdmin(CommandSource source) {
         return availablePassportCommands(source).contains("player");
+    }
+    private boolean canWhisper(CommandSource source) {
+        return whisperSession(source)!=null;
+    }
+    private Session whisperSession(CommandSource source) {
+        if(!(source instanceof Player player) || source.getPermissionValue(WhisperSelection.PERMISSION)==Tristate.FALSE) return null;
+        Session session=sessions.get(player.getUniqueId());
+        return session!=null && session.player==player && session.playReady && current(session) ? session : null;
+    }
+    private List<WhisperSelection.Entry> whisperPlayers(Session sender,Instant now) {
+        boolean realNames=policies.get(sender.player.getUniqueId()).filter(policy -> policy.active(now)).isPresent();
+        return sessions.values().stream().filter(this::current).filter(session -> session.playReady)
+            .map(session -> new WhisperSelection.Entry(session.player.getUniqueId(),session.player.getUsername(),realNames
+                ? policies.get(session.player.getUniqueId()).filter(policy -> policy.active(now)).map(Policy::displayName).orElse("") : ""))
+            .toList();
+    }
+    private final class WhisperCommand implements SimpleCommand {
+        @Override public boolean hasPermission(Invocation invocation) {
+            if(!(invocation.source() instanceof Player player) || player.getPermissionValue(WhisperSelection.PERMISSION)==Tristate.FALSE) return false;
+            Session session=sessions.get(player.getUniqueId());
+            // Commands may be advertised just before ServerPostConnectEvent; execution still requires playReady.
+            return session!=null && session.player==player && current(session);
+        }
+        @Override public List<String> suggest(Invocation invocation) {
+            Session sender=whisperSession(invocation.source());
+            if(sender==null || invocation.arguments().length>1) return List.of();
+            Player player=sender.player;
+            String prefix=invocation.arguments().length==0 ? "" : invocation.arguments()[0];
+            return WhisperSelection.suggestions(whisperPlayers(sender,Instant.now()),player.getUniqueId(),prefix);
+        }
+        @Override public void execute(Invocation invocation) {
+            CommandSource source=invocation.source();
+            Session sender=whisperSession(source);
+            if(sender==null) { source.sendMessage(Component.text("귓속말을 사용할 수 없습니다.",NamedTextColor.GRAY)); return; }
+            Player player=sender.player; String[] arguments=invocation.arguments();
+            String message=arguments.length<2 ? "" : String.join(" ",Arrays.copyOfRange(arguments,1,arguments.length));
+            if(arguments.length<2 || !WhisperSelection.safeQuery(arguments[0]) || !WhisperSelection.safeMessage(message)) {
+                player.sendMessage(Component.text("/msg <실명|IGN> <내용: 1–300자>",NamedTextColor.GRAY)); return;
+            }
+            long now=System.nanoTime(),previous=sender.lastWhisper.get();
+            if(previous!=Long.MIN_VALUE && now-previous<TimeUnit.SECONDS.toNanos(1)
+                || !sender.lastWhisper.compareAndSet(previous,now)) {
+                player.sendMessage(Component.text("잠시 후 다시 보내주세요.",NamedTextColor.GRAY)); return;
+            }
+            List<WhisperSelection.Entry> found=WhisperSelection.targets(whisperPlayers(sender,Instant.now()),arguments[0]);
+            if(found.isEmpty()) { player.sendMessage(Component.text("접속 중인 플레이어를 찾을 수 없습니다.",NamedTextColor.GRAY)); return; }
+            if(found.size()>1) {
+                player.sendMessage(Component.text("같은 이름이 여러 명입니다. IGN으로 지정해주세요.",NamedTextColor.GRAY));
+                found.stream().limit(10).forEach(target -> player.sendMessage(Component.text("· "+target.ign(),NamedTextColor.GRAY)
+                    .clickEvent(ClickEvent.suggestCommand("/msg "+target.ign()+" ")))); return;
+            }
+            WhisperSelection.Entry match=found.getFirst(); Session recipient=sessions.get(match.uuid());
+            if(match.uuid().equals(player.getUniqueId())) { player.sendMessage(Component.text("자신에게 보낼 수 없습니다.",NamedTextColor.GRAY)); return; }
+            if(!current(sender) || recipient==null || !current(recipient) || !recipient.playReady
+                || !WhisperSelection.targets(whisperPlayers(sender,Instant.now()),arguments[0]).equals(found)) {
+                player.sendMessage(Component.text("접속 중인 플레이어를 찾을 수 없습니다.",NamedTextColor.GRAY)); return;
+            }
+            recipient.player.sendMessage(Component.text("[귓속말] "+player.getUsername()+" → 나: ",NamedTextColor.GRAY)
+                .append(Component.text(message,NamedTextColor.WHITE)));
+            player.sendMessage(Component.text("[귓속말] 나 → "+recipient.player.getUsername()+": ",NamedTextColor.GRAY)
+                .append(Component.text(message,NamedTextColor.WHITE)));
+        }
     }
     private List<String> playerSuggestions(CommandSource source,String prefix) {
         if(!canSuggestAdmin(source)) return List.of();

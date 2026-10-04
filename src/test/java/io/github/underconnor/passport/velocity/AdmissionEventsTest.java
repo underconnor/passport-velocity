@@ -125,10 +125,12 @@ class AdmissionEventsTest {
     }
 
     static final class Person {
-        UUID uuid; Player player; boolean active=true; String server; Tristate permission=Tristate.UNDEFINED;
+        UUID uuid; Player player; boolean active=true; String server,ign="TestPlayer"; Tristate permission=Tristate.UNDEFINED;
         final Map<String,ServerConnection> backends=new HashMap<>();
         int connectRequests; CompletableFuture<ConnectionRequestBuilder.Result> connection=new CompletableFuture<>();
         List<Component> messages=new ArrayList<>();
+        List<Component> tabHeaders=new ArrayList<>(),tabFooters=new ArrayList<>();
+        Component tabHeader=Component.empty(),tabFooter=Component.empty();
         List<byte[]> packets=new ArrayList<>();
     }
     final class Fixture {
@@ -156,6 +158,7 @@ class AdmissionEventsTest {
                 case "getServer" -> Optional.ofNullable(servers.get(args[0]));
                 case "getAllServers" -> servers.values();
                 case "getAllPlayers" -> people.stream().map(person -> person.player).toList();
+                case "getChannelRegistrar" -> stub(com.velocitypowered.api.proxy.messages.ChannelRegistrar.class,(registration,parameters) -> null);
                 default -> null;
             });
             plugin=new PassportVelocity(proxy,stub(Logger.class,(method,args) -> null));
@@ -175,12 +178,15 @@ class AdmissionEventsTest {
             Person person=new Person(); person.uuid=uuid; person.server=server;
             person.player=stub(Player.class,(method,args) -> switch(method.getName()) {
                 case "getUniqueId" -> person.uuid;
-                case "getUsername" -> "TestPlayer";
+                case "getUsername" -> person.ign;
                 case "isActive" -> person.active;
                 case "isOnlineMode" -> true;
                 case "getPermissionValue" -> person.permission;
                 case "disconnect" -> { person.active=false; yield null; }
                 case "sendMessage","sendActionBar" -> { if(args[args.length-1] instanceof Component text) person.messages.add(text); yield null; }
+                case "sendPlayerListHeaderAndFooter" -> { person.tabHeader=(Component)args[0]; person.tabFooter=(Component)args[1]; person.tabHeaders.add(person.tabHeader); person.tabFooters.add(person.tabFooter); yield null; }
+                case "getPlayerListHeader" -> person.tabHeader;
+                case "getPlayerListFooter" -> person.tabFooter;
                 case "getCurrentServer" -> person.server==null ? Optional.empty() : Optional.of(person.backends.computeIfAbsent(person.server,name -> stub(ServerConnection.class,(connection,parameters) -> switch(connection.getName()) {
                     case "sendPluginMessage" -> { person.packets.add((byte[])parameters[1]); yield true; }
                     case "getPlayer" -> person.player;
