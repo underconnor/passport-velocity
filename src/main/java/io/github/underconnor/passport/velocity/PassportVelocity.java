@@ -781,11 +781,20 @@ public final class PassportVelocity {
                 || !WhisperSelection.targets(whisperPlayers(sender,Instant.now()),arguments[0]).equals(found)) {
                 player.sendMessage(Component.text("접속 중인 플레이어를 찾을 수 없습니다.",NamedTextColor.GRAY)); return;
             }
-            recipient.player.sendMessage(Component.text("[귓속말] "+player.getUsername()+" → 나: ",NamedTextColor.GRAY)
+            recipient.player.sendMessage(Component.text("[귓속말] ",NamedTextColor.GRAY)
+                .append(whisperNickname(player.getUsername()))
+                .append(Component.text(" → 나: ",NamedTextColor.GRAY))
                 .append(Component.text(message,NamedTextColor.WHITE)));
-            player.sendMessage(Component.text("[귓속말] 나 → "+recipient.player.getUsername()+": ",NamedTextColor.GRAY)
+            player.sendMessage(Component.text("[귓속말] 나 → ",NamedTextColor.GRAY)
+                .append(whisperNickname(recipient.player.getUsername()))
+                .append(Component.text(": ",NamedTextColor.GRAY))
                 .append(Component.text(message,NamedTextColor.WHITE)));
         }
+    }
+    private Component whisperNickname(String ign) {
+        return Component.text(ign,NamedTextColor.GRAY)
+            .clickEvent(ClickEvent.suggestCommand("/msg "+ign+" "))
+            .hoverEvent(Component.text("귓속말 보내기"));
     }
     private List<String> playerSuggestions(CommandSource source,String prefix) {
         if(!canSuggestAdmin(source)) return List.of();

@@ -5,6 +5,7 @@ import com.velocitypowered.api.event.command.CommandExecuteEvent;
 import com.velocitypowered.api.permission.Tristate;
 import io.github.underconnor.passport.core.Policy;
 import net.kyori.adventure.text.*;
+import net.kyori.adventure.text.event.ClickEvent;
 import net.kyori.adventure.text.format.NamedTextColor;
 import org.junit.jupiter.api.Test;
 import java.time.Instant;
@@ -15,6 +16,23 @@ import static io.github.underconnor.passport.velocity.NetworkRosterCommandTest.*
 import static org.junit.jupiter.api.Assertions.*;
 
 class WhisperCommandTest {
+    @Test void whisperNicknamesSuggestTheExactIgnForRepliesWithoutMakingTheBodyClickable() throws Exception {
+        var f=new AdmissionEventsTest().new Fixture();
+        Person sender=person(f,"lobby","Sender","동명이인"),target=person(f,"build","Target","동명이인");
+        whisper(f.plugin).execute(invocation(sender.player,"Target","본문"));
+        for(var pair:List.of(Map.entry(target.messages.getLast(),"Sender"),Map.entry(sender.messages.getLast(),"Target"))) {
+            Component line=pair.getKey(),nickname=line.children().getFirst();
+            assertEquals(pair.getValue(),((TextComponent)nickname).content());
+            assertEquals(ClickEvent.suggestCommand("/msg "+pair.getValue()+" "),nickname.clickEvent());
+            assertNotNull(nickname.hoverEvent());
+            assertNull(line.clickEvent()); assertNull(line.hoverEvent());
+            for(Component child:line.children().subList(1,line.children().size())) {
+                assertNull(child.clickEvent()); assertNull(child.hoverEvent());
+            }
+            assertEquals("본문",((TextComponent)line.children().getLast()).content());
+            assertEquals(NamedTextColor.WHITE,line.children().getLast().color());
+        }
+    }
     @Test void ordinaryPlayersWhisperByRealNameAcrossBackendsAndMessageFormattingStaysLiteral() throws Exception {
         var f=new AdmissionEventsTest().new Fixture(); Person sender=person(f,"lobby","Sender","본인"),target=person(f,"build","Target","정지원");
         var command=whisper(f.plugin);
