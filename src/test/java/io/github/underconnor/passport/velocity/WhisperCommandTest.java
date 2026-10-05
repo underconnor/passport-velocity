@@ -30,7 +30,7 @@ class WhisperCommandTest {
                 assertNull(child.clickEvent()); assertNull(child.hoverEvent());
             }
             assertEquals("본문",((TextComponent)line.children().getLast()).content());
-            assertEquals(NamedTextColor.WHITE,line.children().getLast().color());
+            assertEquals(NamedTextColor.GRAY,line.children().getLast().color());
         }
     }
     @Test void ordinaryPlayersWhisperByRealNameAcrossBackendsAndMessageFormattingStaysLiteral() throws Exception {
@@ -41,7 +41,7 @@ class WhisperCommandTest {
         assertEquals("[귓속말] Sender → 나: <red>안녕 §a테스트",text(target.messages.getLast()));
         assertEquals("[귓속말] 나 → Target: <red>안녕 §a테스트",text(sender.messages.getLast()));
         Component body=target.messages.getLast().children().getLast();
-        assertEquals("<red>안녕 §a테스트",((TextComponent)body).content()); assertEquals(NamedTextColor.WHITE,body.color());
+        assertEquals("<red>안녕 §a테스트",((TextComponent)body).content()); assertEquals(NamedTextColor.GRAY,body.color());
         assertNull(body.clickEvent()); assertNull(body.hoverEvent()); assertEquals("lobby",sender.server); assertEquals("build",target.server);
     }
     @Test void ignWinsOverSomeoneElsesRealNameAndDuplicateRealNamesShowIgnChoicesWithoutSending() throws Exception {

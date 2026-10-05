@@ -784,11 +784,11 @@ public final class PassportVelocity {
             recipient.player.sendMessage(Component.text("[귓속말] ",NamedTextColor.GRAY)
                 .append(whisperNickname(player.getUsername()))
                 .append(Component.text(" → 나: ",NamedTextColor.GRAY))
-                .append(Component.text(message,NamedTextColor.WHITE)));
+                .append(Component.text(message,NamedTextColor.GRAY)));
             player.sendMessage(Component.text("[귓속말] 나 → ",NamedTextColor.GRAY)
                 .append(whisperNickname(recipient.player.getUsername()))
                 .append(Component.text(": ",NamedTextColor.GRAY))
-                .append(Component.text(message,NamedTextColor.WHITE)));
+                .append(Component.text(message,NamedTextColor.GRAY)));
         }
     }
     private Component whisperNickname(String ign) {
